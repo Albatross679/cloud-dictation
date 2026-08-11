@@ -1,7 +1,7 @@
 import { resolveModel, buildAudioInput, DEFAULT_MODEL } from '../core/models.js';
 import { cleanupText } from '../core/cleanup.js';
 import { audioSeconds, neuronsFor, utcDay } from '../core/usage.js';
-import { keytermsFrom } from '../core/keyterms.js';
+import { parseTerms } from '../core/terms.js';
 import { languageMismatch } from '../core/language.js';
 
 const MAX_BYTES = 25 * 1024 * 1024;
@@ -25,9 +25,9 @@ export async function handleTranscribe(request, env, ctx) {
   const contentType = request.headers.get('content-type') || 'audio/wav';
   const started = Date.now();
 
-  const initialPrompt = (url.searchParams.get('initial_prompt') || env.INITIAL_PROMPT || '').trim();
+  const vocabulary = (url.searchParams.get('vocabulary') || url.searchParams.get('initial_prompt') || env.VOCABULARY || '').trim();
   const language = url.searchParams.get('language') || 'auto';
-  const keyterms = keytermsFrom(initialPrompt);
+  const terms = parseTerms(vocabulary);
 
   let raw;
   try {
@@ -38,8 +38,7 @@ export async function handleTranscribe(request, env, ctx) {
         diarize: url.searchParams.get('diarize') === '1',
         dictation: url.searchParams.get('dictation') === '1',
         entities: url.searchParams.get('entities') === '1',
-        initialPrompt,
-        keyterms,
+        terms,
       }),
     });
   } catch (err) {
@@ -72,7 +71,7 @@ export async function handleTranscribe(request, env, ctx) {
       const r = await cleanupText(env.AI, transcript, {
         instruction: url.searchParams.get('instruction'),
         model: url.searchParams.get('cleanup_model') || env.DEFAULT_CLEANUP_MODEL,
-        initialPrompt,
+        terms,
       });
       text = r.text;
       cleaned = r.cleaned;
@@ -90,9 +89,9 @@ export async function handleTranscribe(request, env, ctx) {
     bytes: bytes.length,
     language_mismatch: languageMismatch(text, language) || undefined,
     model_honors_language: model.supportsLanguage ?? false,
-    keyterms_applied: modelKey === 'nova-3' && language !== 'auto' ? keyterms : [],
-    keyterms_skipped_reason:
-      keyterms.length && modelKey === 'nova-3' && language === 'auto'
+    terms_applied: model.supportsVocabulary && !(modelKey === 'nova-3' && language === 'auto') ? terms : [],
+    terms_skipped_reason:
+      terms.length && modelKey === 'nova-3' && language === 'auto'
         ? 'Nova-3 rejects keyterm when the language is auto-detected. Pin a language to boost vocabulary.'
         : undefined,
     audio_seconds: seconds,

@@ -273,7 +273,7 @@ def patch_settings() -> None:
             }
             .padding(.top, 4)
 
-            Text("Spoken vocabulary and context go in Transcription > Initial Prompt.")
+            Text("Vocabulary goes in Transcription > Initial Prompt: comma separated terms, no sentences.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }

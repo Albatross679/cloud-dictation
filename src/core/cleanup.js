@@ -23,12 +23,12 @@ export function resolveCleanupModel(name) {
   return CLEANUP_MODELS[name] || CLEANUP_MODELS[DEFAULT_CLEANUP_MODEL];
 }
 
-export async function cleanupText(ai, text, { instruction, model, initialPrompt } = {}) {
+export async function cleanupText(ai, text, { instruction, model, terms = [] } = {}) {
   if (!text || !text.trim()) return { text, cleaned: false };
 
   let system = SYSTEM;
-  if (initialPrompt) {
-    system += `\n\nContext for this dictation, including how names and terms in it are spelled. Only correct a term to one appearing here when it is clearly the same word misheard:\n${initialPrompt}`;
+  if (terms.length) {
+    system += `\n\nThese terms are spelled correctly. Only correct a word to one of them when it is clearly the same word misheard: ${terms.join(', ')}.`;
   }
   if (instruction) {
     system += `\n\nAdditional instruction: ${instruction}`;

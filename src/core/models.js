@@ -1,3 +1,5 @@
+import { termsAsWhisperPrompt } from './terms.js';
+
 const AUDIO_STREAM = 'stream';
 const AUDIO_BASE64 = 'base64';
 const AUDIO_BYTE_ARRAY = 'byteArray';
@@ -9,8 +11,8 @@ export const MODELS = {
     usdPerAudioMinute: 0.0052,
     freeAudioMinutesPerDay: 21,
     label: 'Deepgram Nova-3',
-    notes: 'Lowest latency, punctuation and diarization, accurate on long audio. Ignores the initial prompt: the Cloudflare build supports no prompting parameter.',
-    options: ({ language, diarize, dictation, entities, keyterms }) => ({
+    notes: 'Lowest latency, punctuation and diarization, accurate on long audio. Boosts the vocabulary list, but only when a language is pinned.',
+    options: ({ language, diarize, dictation, entities, terms }) => ({
       punctuate: true,
       smart_format: true,
       numerals: true,
@@ -21,10 +23,9 @@ export const MODELS = {
       detect_entities: entities || undefined,
       // Language detection routes to the multilingual Nova-3, which rejects
       // keyterm outright, so boosting requires a pinned language.
-      keyterm: language !== 'auto' && keyterms?.length ? keyterms : undefined,
+      keyterm: language !== 'auto' && terms?.length ? terms : undefined,
     }),
-    // Takes no free-form prompt, but boosts discrete terms mined from it.
-    supportsInitialPrompt: 'keyterms',
+    supportsVocabulary: true,
     supportsLanguage: true,
     readText: (r) => r?.results?.channels?.[0]?.alternatives?.[0]?.transcript,
   },
@@ -35,14 +36,14 @@ export const MODELS = {
     usdPerAudioMinute: 0.000513,
     freeAudioMinutesPerDay: 214,
     label: 'Whisper large-v3-turbo',
-    notes: 'Cheapest. Drops content on audio longer than roughly a minute.',
-    options: ({ language, initialPrompt }) => ({
+    notes: 'Cheapest. Takes the vocabulary list as a decoder prompt. Drops content on audio longer than roughly a minute.',
+    options: ({ language, terms }) => ({
       task: 'transcribe',
       language: language === 'auto' ? undefined : language,
       vad_filter: true,
-      initial_prompt: initialPrompt || undefined,
+      initial_prompt: termsAsWhisperPrompt(terms),
     }),
-    supportsInitialPrompt: true,
+    supportsVocabulary: true,
     supportsLanguage: true,
     readText: (r) => r?.text ?? r?.transcription_info?.text,
   },
@@ -53,9 +54,9 @@ export const MODELS = {
     usdPerAudioMinute: 0.000453,
     freeAudioMinutesPerDay: 243,
     label: 'Whisper (base)',
-    notes: 'Weakest on proper nouns. Cannot be pinned to a language: it accepts the language parameter and discards it, so short or noisy audio can come back in the wrong language.',
+    notes: 'Ignores the vocabulary list. Weakest on proper nouns. Cannot be pinned to a language: it accepts the language parameter and discards it, so short or noisy audio can come back in the wrong language.',
     options: () => ({}),
-    supportsInitialPrompt: false,
+    supportsVocabulary: false,
     supportsLanguage: false,
     readText: (r) => r?.text,
   },
@@ -66,9 +67,9 @@ export const MODELS = {
     usdPerAudioMinute: null,
     freeAudioMinutesPerDay: null,
     label: 'Whisper tiny (English)',
-    notes: 'Smallest and fastest. English only by construction, so it cannot drift to another language. Cloudflare lists no price for it.',
+    notes: 'Ignores the vocabulary list. Smallest and fastest. English only by construction, so it cannot drift to another language. Cloudflare lists no price for it.',
     options: () => ({}),
-    supportsInitialPrompt: false,
+    supportsVocabulary: false,
     supportsLanguage: 'en-only',
     readText: (r) => r?.text,
   },
@@ -102,7 +103,7 @@ export function catalog() {
     usdPerAudioMinute: m.usdPerAudioMinute,
     freeAudioMinutesPerDay: m.freeAudioMinutesPerDay,
     notes: m.notes,
-    supportsInitialPrompt: m.supportsInitialPrompt ?? false,
+    supportsVocabulary: m.supportsVocabulary ?? false,
     supportsLanguage: m.supportsLanguage ?? false,
     default: key === DEFAULT_MODEL,
   }));

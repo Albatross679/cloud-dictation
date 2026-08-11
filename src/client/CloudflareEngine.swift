@@ -187,12 +187,13 @@ class CloudflareEngine: TranscriptionEngine {
             URLQueryItem(name: "language", value: settings.selectedLanguage),
         ]
 
-        // Settings > Transcription > Initial Prompt. Whisper takes it as a
-        // decoder prompt; Nova-3 has no prompting parameter, so it reaches the
-        // cleanup pass as context instead.
-        let prompt = settings.initialPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !prompt.isEmpty {
-            items.append(URLQueryItem(name: "initial_prompt", value: prompt))
+        // Settings > Transcription > Initial Prompt, read as a term list.
+        // Nova-3 boosts the terms directly, Whisper takes them as a decoder
+        // glossary, and the cleanup pass uses them as known spellings.
+        let vocabulary = settings.initialPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !vocabulary.isEmpty {
+            items.append(URLQueryItem(name: "vocabulary", value: vocabulary))
+        }
         }
 
         if prefs.cloudflareCleanupEnabled {

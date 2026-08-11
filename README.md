@@ -62,7 +62,7 @@ The local Whisper engine compiles even when only the Cloudflare engine is used, 
 | `language` | `auto` | ISO code, or `auto` to detect |
 | `cleanup` | off | `1` runs an LLM pass to strip filler words and fix punctuation |
 | `cleanup_model` | `llama-8b` | `llama-8b`, `llama-3b`, `granite-micro`, `mistral-24b` |
-| `initial_prompt` | none | free text context: spellings, jargon, subject matter |
+| `vocabulary` | none | comma separated terms to spell correctly (`initial_prompt` is accepted as an alias) |
 | `instruction` | none | extra cleanup instruction, appended to the system prompt |
 | `diarize` | off | `1` labels speakers (nova-3 only) |
 | `dictation` | off | `1` interprets spoken punctuation (nova-3 only) |
@@ -71,21 +71,29 @@ The local Whisper engine compiles even when only the Cloudflare engine is used, 
 
 Server side defaults come from `vars` in `wrangler.jsonc`: `DEFAULT_MODEL`, `DEFAULT_CLEANUP_MODEL`, and `INITIAL_PROMPT`.
 
-## The initial prompt
+## Vocabulary
 
-One field, Settings > Transcription > Initial Prompt, used differently per model:
+One field, Settings > Transcription > Initial Prompt, read as a **term list**: comma or newline separated, no sentences. Every entry is taken verbatim, so `kubectl` stays lowercase and `R2` keeps its digit. Multi-word entries stay whole, which matters because Deepgram boosts `Workers AI` as a phrase. Duplicates are folded case-insensitively and the list is capped at Deepgram's 100.
 
-| Model | How it is used |
+Each model consumes the same list in the way it can:
+
+| Model | How the list is used |
 |---|---|
-| `whisper-turbo` | native `initial_prompt` decoder prompt, biases the transcription itself |
-| `nova-3` | ignored by the recognizer, passed to the cleanup pass as context |
-| `whisper`, `whisper-tiny-en` | ignored by the recognizer, passed to the cleanup pass as context |
+| `nova-3` | Deepgram Keyterm Prompting, boosts each term at recognition time |
+| `whisper-turbo` | joined into a `Glossary: ...` decoder prompt |
+| `whisper`, `whisper-tiny-en` | recognizer ignores it; reaches the cleanup pass as known spellings |
 
-**Nova-3 accepts no free-form prompt**, but it does boost discrete terms. Deepgram's Keyterm Prompting takes up to 100 terms, so the worker mines the initial prompt for the words worth boosting (proper nouns, acronyms, anything carrying a digit or an internal capital) and passes those as `keyterm`. Measured on the same audio: `from r two` without it, `from R2` with it.
+Measured on the same audio, vocabulary off then on:
 
-**Boosting needs a pinned language.** With `language=auto` the request routes to the multilingual Nova-3, which rejects `keyterm` outright. The worker drops the terms in that case and explains why in `keyterms_skipped_reason` rather than failing the transcription.
+| Model | Without | With |
+|---|---|---|
+| `nova-3` | "from r two" | "from R2" |
+| `nova-3` | "in vectorize ... hyperdrive" | "in Vectorize ... Hyperdrive" |
+| `whisper-turbo` | "through hyperdrive" | "through Hyperdrive" |
 
-`keywords`, the pre-Nova-3 parameter, is refused outright: "Keywords are not supported for Nova-3. Please use keyterm instead."
+**Nova-3 boosting needs a pinned language.** With `language=auto` the request routes to the multilingual Nova-3, which rejects `keyterm` outright. The worker drops the terms in that case and explains why in `terms_skipped_reason` rather than failing the transcription.
+
+`keywords`, the pre-Nova-3 parameter, is refused: "Keywords are not supported for Nova-3. Please use keyterm instead."
 
 ## What an hour costs
 
@@ -98,19 +106,6 @@ One field, Settings > Transcription > Initial Prompt, used differently per model
 | Whisper base | 2,468 | $0.0272 |
 
 Nova-3 is 10.1x Whisper turbo, a difference of $0.28 per hour of speech.
-
-## Language
-
-| Model | Can be pinned to a language |
-|---|---|
-| `nova-3` | yes |
-| `whisper-turbo` | yes |
-| `whisper` | **no**, accepts the parameter and discards it |
-| `whisper-tiny-en` | English only by construction |
-
-`@cf/openai/whisper` declares only `audio` in its schema. Sending `language=zh` over English audio returns the same English text with no error, so the setting cannot be enforced and the model detects per clip. Short or noisy audio can come back in an unrelated language.
-
-Because a wrong-language transcript pasted into the focused app is worse than nothing, `/transcribe` compares the output script against the requested language and returns `language_mismatch` when the dominant script disagrees by more than half. The threshold is high on purpose: "Deploy the R2 bucket to 上海 region" stays clean. The desktop client rejects a flagged result instead of pasting it.
 
 ## Metering
 
