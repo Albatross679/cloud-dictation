@@ -27,6 +27,7 @@ export async function handleTranscribe(request, env, ctx) {
 
   const initialPrompt = (url.searchParams.get('initial_prompt') || env.INITIAL_PROMPT || '').trim();
   const language = url.searchParams.get('language') || 'auto';
+  const keyterms = keytermsFrom(initialPrompt);
 
   let raw;
   try {
@@ -38,7 +39,7 @@ export async function handleTranscribe(request, env, ctx) {
         dictation: url.searchParams.get('dictation') === '1',
         entities: url.searchParams.get('entities') === '1',
         initialPrompt,
-        keyterms: keytermsFrom(initialPrompt),
+        keyterms,
       }),
     });
   } catch (err) {
@@ -89,6 +90,11 @@ export async function handleTranscribe(request, env, ctx) {
     bytes: bytes.length,
     language_mismatch: languageMismatch(text, language) || undefined,
     model_honors_language: model.supportsLanguage ?? false,
+    keyterms_applied: modelKey === 'nova-3' && language !== 'auto' ? keyterms : [],
+    keyterms_skipped_reason:
+      keyterms.length && modelKey === 'nova-3' && language === 'auto'
+        ? 'Nova-3 rejects keyterm when the language is auto-detected. Pin a language to boost vocabulary.'
+        : undefined,
     audio_seconds: seconds,
     neurons: neurons,
     transcribe_ms: transcribeMs,

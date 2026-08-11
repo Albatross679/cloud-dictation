@@ -3,7 +3,6 @@ import { handleTranscribe } from './api/transcribe.js';
 import { catalog } from './core/models.js';
 import { CLEANUP_MODELS, DEFAULT_CLEANUP_MODEL } from './core/cleanup.js';
 import { UsageCounter } from './api/usage_counter.js';
-import { handleProbe } from './api/probe.js';
 import { rateCard } from './core/usage.js';
 
 export { UsageCounter };
@@ -38,10 +37,6 @@ export default {
 
     if (url.pathname === '/usage/reset' && request.method === 'POST') {
       return usageStub(env).fetch('https://usage/reset', { method: 'POST' });
-    }
-
-    if (url.pathname === '/probe' && request.method === 'POST') {
-      return handleProbe(request, env);
     }
 
     if (url.pathname === '/transcribe' && request.method === 'POST') {

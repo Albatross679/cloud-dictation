@@ -19,7 +19,9 @@ export const MODELS = {
       diarize: diarize || undefined,
       dictation: dictation || undefined,
       detect_entities: entities || undefined,
-      keyterm: keyterms?.length ? keyterms : undefined,
+      // Language detection routes to the multilingual Nova-3, which rejects
+      // keyterm outright, so boosting requires a pinned language.
+      keyterm: language !== 'auto' && keyterms?.length ? keyterms : undefined,
     }),
     // Takes no free-form prompt, but boosts discrete terms mined from it.
     supportsInitialPrompt: 'keyterms',
