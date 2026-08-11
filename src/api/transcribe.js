@@ -1,6 +1,8 @@
 import { resolveModel, buildAudioInput, DEFAULT_MODEL } from '../core/models.js';
 import { cleanupText } from '../core/cleanup.js';
 import { audioSeconds, neuronsFor, utcDay } from '../core/usage.js';
+import { keytermsFrom } from '../core/keyterms.js';
+import { languageMismatch } from '../core/language.js';
 
 const MAX_BYTES = 25 * 1024 * 1024;
 
@@ -24,17 +26,19 @@ export async function handleTranscribe(request, env, ctx) {
   const started = Date.now();
 
   const initialPrompt = (url.searchParams.get('initial_prompt') || env.INITIAL_PROMPT || '').trim();
+  const language = url.searchParams.get('language') || 'auto';
 
   let raw;
   try {
     raw = await env.AI.run(model.id, {
       ...(await buildAudioInput(model, bytes, contentType)),
       ...model.options({
-        language: url.searchParams.get('language') || 'auto',
+        language,
         diarize: url.searchParams.get('diarize') === '1',
         dictation: url.searchParams.get('dictation') === '1',
         entities: url.searchParams.get('entities') === '1',
         initialPrompt,
+        keyterms: keytermsFrom(initialPrompt),
       }),
     });
   } catch (err) {
@@ -83,6 +87,8 @@ export async function handleTranscribe(request, env, ctx) {
     model: modelKey,
     cleaned,
     bytes: bytes.length,
+    language_mismatch: languageMismatch(text, language) || undefined,
+    model_honors_language: model.supportsLanguage ?? false,
     audio_seconds: seconds,
     neurons: neurons,
     transcribe_ms: transcribeMs,

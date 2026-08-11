@@ -10,6 +10,7 @@ struct CloudflareClient {
     enum ClientError: LocalizedError {
         case notConfigured
         case badStatus(Int, String)
+        case languageMismatch(requested: String, detected: String)
 
         var errorDescription: String? {
             switch self {
@@ -19,6 +20,8 @@ struct CloudflareClient {
                 if code == 401 { return "Rejected the auth token (401)." }
                 let detail = body.trimmingCharacters(in: .whitespacesAndNewlines)
                 return "Worker returned \(code)\(detail.isEmpty ? "" : ": \(detail)")"
+            case let .languageMismatch(requested, detected):
+                return "Discarded: came back as \(detected) script but the language is set to \(requested). Try a model that can be pinned to a language."
             }
         }
     }
@@ -78,7 +81,17 @@ struct CloudflareClient {
         guard http.statusCode == 200 else {
             throw ClientError.badStatus(http.statusCode, String(data: data, encoding: .utf8) ?? "")
         }
-        return try JSONDecoder().decode(TranscriptionResponse.self, from: data).text
+        let decoded = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
+        // Whisper can mis-detect the language on short or noisy audio and hand
+        // back fluent text in a script the speaker never used. Pasting that
+        // into the focused app is worse than surfacing the failure.
+        if let mismatch = decoded.language_mismatch {
+            throw ClientError.languageMismatch(
+                requested: mismatch.requested,
+                detected: mismatch.detected_script
+            )
+        }
+        return decoded.text
     }
 
     private struct ModelsResponse: Decodable {
@@ -87,7 +100,12 @@ struct CloudflareClient {
     }
 
     private struct TranscriptionResponse: Decodable {
+        struct Mismatch: Decodable {
+            let requested: String
+            let detected_script: String
+        }
         let text: String
+        let language_mismatch: Mismatch?
     }
 }
 

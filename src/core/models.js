@@ -10,7 +10,7 @@ export const MODELS = {
     freeAudioMinutesPerDay: 21,
     label: 'Deepgram Nova-3',
     notes: 'Lowest latency, punctuation and diarization, accurate on long audio. Ignores the initial prompt: the Cloudflare build supports no prompting parameter.',
-    options: ({ language, diarize, dictation, entities }) => ({
+    options: ({ language, diarize, dictation, entities, keyterms }) => ({
       punctuate: true,
       smart_format: true,
       numerals: true,
@@ -19,8 +19,11 @@ export const MODELS = {
       diarize: diarize || undefined,
       dictation: dictation || undefined,
       detect_entities: entities || undefined,
+      keyterm: keyterms?.length ? keyterms : undefined,
     }),
-    supportsInitialPrompt: false,
+    // Takes no free-form prompt, but boosts discrete terms mined from it.
+    supportsInitialPrompt: 'keyterms',
+    supportsLanguage: true,
     readText: (r) => r?.results?.channels?.[0]?.alternatives?.[0]?.transcript,
   },
 
@@ -38,6 +41,7 @@ export const MODELS = {
       initial_prompt: initialPrompt || undefined,
     }),
     supportsInitialPrompt: true,
+    supportsLanguage: true,
     readText: (r) => r?.text ?? r?.transcription_info?.text,
   },
 
@@ -47,9 +51,10 @@ export const MODELS = {
     usdPerAudioMinute: 0.000453,
     freeAudioMinutesPerDay: 243,
     label: 'Whisper (base)',
-    notes: 'Weakest on proper nouns and technical terms.',
+    notes: 'Weakest on proper nouns. Cannot be pinned to a language: it accepts the language parameter and discards it, so short or noisy audio can come back in the wrong language.',
     options: () => ({}),
     supportsInitialPrompt: false,
+    supportsLanguage: false,
     readText: (r) => r?.text,
   },
 
@@ -59,9 +64,10 @@ export const MODELS = {
     usdPerAudioMinute: null,
     freeAudioMinutesPerDay: null,
     label: 'Whisper tiny (English)',
-    notes: 'Smallest and fastest. English only. Cloudflare lists no price for it.',
+    notes: 'Smallest and fastest. English only by construction, so it cannot drift to another language. Cloudflare lists no price for it.',
     options: () => ({}),
     supportsInitialPrompt: false,
+    supportsLanguage: 'en-only',
     readText: (r) => r?.text,
   },
 };
@@ -94,7 +100,8 @@ export function catalog() {
     usdPerAudioMinute: m.usdPerAudioMinute,
     freeAudioMinutesPerDay: m.freeAudioMinutesPerDay,
     notes: m.notes,
-    supportsInitialPrompt: Boolean(m.supportsInitialPrompt),
+    supportsInitialPrompt: m.supportsInitialPrompt ?? false,
+    supportsLanguage: m.supportsLanguage ?? false,
     default: key === DEFAULT_MODEL,
   }));
 }

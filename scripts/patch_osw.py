@@ -223,6 +223,15 @@ def patch_settings() -> None:
             }
             .labelsHidden()
 
+            if viewModel.cloudflareModel == "whisper" {
+                Label(
+                    "Whisper base ignores the language setting and detects per clip, so short audio can come back in the wrong language.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+            }
+
             Divider()
 
             Toggle("Clean up dictation with an LLM", isOn: $viewModel.cloudflareCleanupEnabled)

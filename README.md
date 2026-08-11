@@ -83,6 +83,19 @@ One field, Settings > Transcription > Initial Prompt, used differently per model
 
 **Nova-3 accepts no prompt of any kind.** Its input schema has no prompt or context field, and its two vocabulary parameters both dead end: `keyterm` returns "the selected Nova-3 model does not support keyterm prompting" and `keywords` returns "Keywords are not supported for Nova-3. Please use keyterm instead."
 
+## Language
+
+| Model | Can be pinned to a language |
+|---|---|
+| `nova-3` | yes |
+| `whisper-turbo` | yes |
+| `whisper` | **no**, accepts the parameter and discards it |
+| `whisper-tiny-en` | English only by construction |
+
+`@cf/openai/whisper` declares only `audio` in its schema. Sending `language=zh` over English audio returns the same English text with no error, so the setting cannot be enforced and the model detects per clip. Short or noisy audio can come back in an unrelated language.
+
+Because a wrong-language transcript pasted into the focused app is worse than nothing, `/transcribe` compares the output script against the requested language and returns `language_mismatch` when the dominant script disagrees by more than half. The threshold is high on purpose: "Deploy the R2 bucket to 上海 region" stays clean. The desktop client rejects a flagged result instead of pasting it.
+
 ## Metering
 
 Neurons are Cloudflare's billing unit. The worker derives them per request rather than querying billing, so no extra API credential is needed:
