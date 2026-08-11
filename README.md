@@ -81,7 +81,23 @@ One field, Settings > Transcription > Initial Prompt, used differently per model
 | `nova-3` | ignored by the recognizer, passed to the cleanup pass as context |
 | `whisper`, `whisper-tiny-en` | ignored by the recognizer, passed to the cleanup pass as context |
 
-**Nova-3 accepts no prompt of any kind.** Its input schema has no prompt or context field, and its two vocabulary parameters both dead end: `keyterm` returns "the selected Nova-3 model does not support keyterm prompting" and `keywords` returns "Keywords are not supported for Nova-3. Please use keyterm instead."
+**Nova-3 accepts no free-form prompt**, but it does boost discrete terms. Deepgram's Keyterm Prompting takes up to 100 terms, so the worker mines the initial prompt for the words worth boosting (proper nouns, acronyms, anything carrying a digit or an internal capital) and passes those as `keyterm`. Measured on the same audio: `from r two` without it, `from R2` with it.
+
+**Boosting needs a pinned language.** With `language=auto` the request routes to the multilingual Nova-3, which rejects `keyterm` outright. The worker drops the terms in that case and explains why in `keyterms_skipped_reason` rather than failing the transcription.
+
+`keywords`, the pre-Nova-3 parameter, is refused outright: "Keywords are not supported for Nova-3. Please use keyterm instead."
+
+## What an hour costs
+
+60 audio minutes, free tier excluded:
+
+| Model | Neurons | Cost |
+|---|---|---|
+| Nova-3 | 28,362 | $0.3120 |
+| Whisper turbo | 2,798 | $0.0308 |
+| Whisper base | 2,468 | $0.0272 |
+
+Nova-3 is 10.1x Whisper turbo, a difference of $0.28 per hour of speech.
 
 ## Language
 
