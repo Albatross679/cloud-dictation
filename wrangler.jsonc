@@ -1,0 +1,12 @@
+{
+  "name": "cloud-dictation",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-01",
+  "ai": { "binding": "AI" },
+  "observability": { "enabled": true },
+  "vars": {
+    "DEFAULT_MODEL": "nova-3",
+    "DEFAULT_CLEANUP_MODEL": "llama-8b",
+    "KEYTERMS": ""
+  }
+}

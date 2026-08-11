@@ -1,0 +1,6 @@
+node_modules/
+.wrangler/
+repos/
+temporary/
+.dev.vars
+.auth-token.local
