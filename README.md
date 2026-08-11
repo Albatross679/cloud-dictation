@@ -31,7 +31,7 @@ Then build and install the app:
 ./scripts/build_app.sh
 ```
 
-Copy `repos/OpenSuperWhisper/build/Build/Products/Release/OpenSuperWhisper.app` to `/Applications`, then set Settings > Models > Engine > Cloudflare and paste the endpoint and token.
+Copy `repos/OpenSuperWhisper/build/Build/Products/Release/OpenSuperWhisper.app` to `/Applications`, then set Settings > Models > Engine > Cloudflare and paste the endpoint and token. Terms go in Settings > Transcription > Vocabulary.
 
 ## Build requirements
 
@@ -73,7 +73,7 @@ Server side defaults come from `vars` in `wrangler.jsonc`: `DEFAULT_MODEL`, `DEF
 
 ## Vocabulary
 
-One field, Settings > Transcription > Initial Prompt, read as a **term list**: comma or newline separated, no sentences. Every entry is taken verbatim, so `kubectl` stays lowercase and `R2` keeps its digit. Multi-word entries stay whole, which matters because Deepgram boosts `Workers AI` as a phrase. Duplicates are folded case-insensitively and the list is capped at Deepgram's 100.
+One field, Settings > Transcription > **Vocabulary**, is a **term list**: comma or newline separated, no sentences. Every entry is taken verbatim, so `kubectl` stays lowercase and `R2` keeps its digit. Multi-word entries stay whole, which matters because Deepgram boosts `Workers AI` as a phrase. Duplicates are folded case-insensitively and the list is capped at Deepgram's 100.
 
 Each model consumes the same list in the way it can:
 

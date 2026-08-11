@@ -187,13 +187,12 @@ class CloudflareEngine: TranscriptionEngine {
             URLQueryItem(name: "language", value: settings.selectedLanguage),
         ]
 
-        // Settings > Transcription > Initial Prompt, read as a term list.
+        // Settings > Transcription > Vocabulary, a comma separated term list.
         // Nova-3 boosts the terms directly, Whisper takes them as a decoder
         // glossary, and the cleanup pass uses them as known spellings.
         let vocabulary = settings.initialPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         if !vocabulary.isEmpty {
             items.append(URLQueryItem(name: "vocabulary", value: vocabulary))
-        }
         }
 
         if prefs.cloudflareCleanupEnabled {

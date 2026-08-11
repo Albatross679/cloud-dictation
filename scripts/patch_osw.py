@@ -273,7 +273,7 @@ def patch_settings() -> None:
             }
             .padding(.top, 4)
 
-            Text("Vocabulary goes in Transcription > Initial Prompt: comma separated terms, no sentences.")
+            Text("Vocabulary lives in the Transcription tab. Nova-3 boosts those terms only when a language is pinned.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -417,6 +417,27 @@ enum OnboardingModelType {
         print("  = Onboarding: download no-op: already applied")
 
 
+def patch_transcription_settings() -> None:
+    """Relabel the shared prompt field as the vocabulary list it now holds."""
+    path = APP / "Settings.swift"
+    patch(
+        path,
+        """                // Initial Prompt
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Initial Prompt")""",
+        """                // Vocabulary
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Vocabulary")""",
+        "Settings: vocabulary heading",
+    )
+    patch(
+        path,
+        """                        Text("Optional text to guide the model's transcription")""",
+        """                        Text("Terms the model should spell correctly, separated by commas. Words and names, not sentences.")""",
+        "Settings: vocabulary caption",
+    )
+
+
 def patch_content_view() -> None:
     """Show today's Cloudflare spend in the main window's hint column."""
     path = APP / "ContentView.swift"
@@ -451,6 +472,7 @@ def main() -> int:
         patch_service()
         patch_settings()
         patch_onboarding()
+        patch_transcription_settings()
         patch_content_view()
     except PatchError as err:
         print(f"\nFAILED: {err}", file=sys.stderr)
