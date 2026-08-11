@@ -29,6 +29,17 @@ export async function handleTranscribe(request, env, ctx) {
   const language = url.searchParams.get('language') || 'auto';
   const terms = parseTerms(vocabulary);
 
+  if (language !== 'auto' && Array.isArray(model.languages) && !model.languages.includes(language)) {
+    return Response.json(
+      {
+        error: `${modelKey} does not support language "${language}"`,
+        supported_languages: model.languages,
+        model: modelKey,
+      },
+      { status: 400 },
+    );
+  }
+
   let raw;
   try {
     raw = await env.AI.run(model.id, {

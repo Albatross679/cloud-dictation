@@ -87,6 +87,19 @@ The DMG format is not what makes an app distributable; notarization is. Upstream
 
 Server side defaults come from `vars` in `wrangler.jsonc`: `DEFAULT_MODEL`, `DEFAULT_CLEANUP_MODEL`, and `INITIAL_PROMPT`.
 
+## Languages
+
+The picker is per model, because the models disagree and the worker is the authority. `GET /models` returns a `languages` array per model, the app caches it on connect, and a language a model cannot serve is rejected with a 400 naming the supported set rather than a 502 from the provider.
+
+| Model | Languages | Measured on Chinese audio |
+|---|---|---|
+| `whisper-turbo` | any the client can display | correct, simplified characters |
+| `nova-3` | `en es fr de it pt nl hi ru ja` only | **hard error**, no such model/language combination |
+| `whisper` | auto-detect only, discards the setting | correct, but returned traditional characters |
+| `whisper-tiny-en` | `en` | hallucinates English, unusable |
+
+Nova-3 is the default and the fastest, but it is English-plus-nine. **For anything outside that set, use `whisper-turbo`.** Cloudflare's Nova-3 build is far narrower than Deepgram's own documented range of 90+ codes.
+
 ## Vocabulary
 
 One field, Settings > Transcription > **Vocabulary**, is a **term list**: comma or newline separated, no sentences. Every entry is taken verbatim, so `kubectl` stays lowercase and `R2` keeps its digit. Multi-word entries stay whole, which matters because Deepgram boosts `Workers AI` as a phrase. Duplicates are folded case-insensitively and the list is capped at Deepgram's 100.

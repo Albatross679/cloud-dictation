@@ -27,6 +27,10 @@ export const MODELS = {
     }),
     supportsVocabulary: true,
     supportsLanguage: true,
+    // Probed against the live worker: every other code returns "No such
+    // model/language/tier combination found", so offering one is a hard error
+    // rather than a silent fallback.
+    languages: ['en', 'es', 'fr', 'de', 'it', 'pt', 'nl', 'hi', 'ru', 'ja'],
     readText: (r) => r?.results?.channels?.[0]?.alternatives?.[0]?.transcript,
   },
 
@@ -45,6 +49,9 @@ export const MODELS = {
     }),
     supportsVocabulary: true,
     supportsLanguage: true,
+    // Whisper's full multilingual range; null means the client may offer
+    // everything it can display.
+    languages: null,
     readText: (r) => r?.text ?? r?.transcription_info?.text,
   },
 
@@ -58,6 +65,8 @@ export const MODELS = {
     options: () => ({}),
     supportsVocabulary: false,
     supportsLanguage: false,
+    // Accepts the parameter and discards it, so auto is the only honest offer.
+    languages: [],
     readText: (r) => r?.text,
   },
 
@@ -71,6 +80,7 @@ export const MODELS = {
     options: () => ({}),
     supportsVocabulary: false,
     supportsLanguage: 'en-only',
+    languages: ['en'],
     readText: (r) => r?.text,
   },
 };
@@ -105,6 +115,7 @@ export function catalog() {
     notes: m.notes,
     supportsVocabulary: m.supportsVocabulary ?? false,
     supportsLanguage: m.supportsLanguage ?? false,
+    languages: m.languages ?? null,
     default: key === DEFAULT_MODEL,
   }));
 }

@@ -38,6 +38,10 @@ struct CloudflareClient {
 
     /// Model keys the worker offers, e.g. ["nova-3", "whisper-turbo"].
     func models() async throws -> [String] {
+        try await catalog().map(\.key)
+    }
+
+    func catalog() async throws -> [ModelEntry] {
         var req = try request("models")
         req.timeoutInterval = 15
 
@@ -48,7 +52,13 @@ struct CloudflareClient {
         guard http.statusCode == 200 else {
             throw ClientError.badStatus(http.statusCode, String(data: data, encoding: .utf8) ?? "")
         }
-        return try JSONDecoder().decode(ModelsResponse.self, from: data).models.map(\.key)
+        return try JSONDecoder().decode(ModelsResponse.self, from: data).models
+    }
+
+    struct ModelEntry: Decodable {
+        let key: String
+        /// nil when the model accepts any language the client can display.
+        let languages: [String]?
     }
 
     func usage() async throws -> CloudflareUsage {
@@ -95,8 +105,7 @@ struct CloudflareClient {
     }
 
     private struct ModelsResponse: Decodable {
-        struct Entry: Decodable { let key: String }
-        let models: [Entry]
+        let models: [ModelEntry]
     }
 
     private struct TranscriptionResponse: Decodable {
@@ -132,7 +141,14 @@ class CloudflareEngine: TranscriptionEngine {
     }
 
     func initialize() async throws {
-        _ = try await Self.client.models()
+        // Cache each model's language list so the picker offers only what the
+        // selected model accepts. Nova-3 hard errors on an unsupported code.
+        let entries = try await Self.client.catalog()
+        let map = Dictionary(uniqueKeysWithValues: entries.map { ($0.key, $0.languages ?? ["*"]) })
+        if let encoded = try? JSONEncoder().encode(map),
+           let json = String(data: encoded, encoding: .utf8) {
+            AppPreferences.shared.cloudflareModelLanguages = json
+        }
         reachable = true
     }
 

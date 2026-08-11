@@ -76,7 +76,12 @@ def patch_preferences() -> None:
     var cloudflareCleanupEnabled: Bool
 
     @UserDefault(key: "cloudflareCleanupModel", defaultValue: "llama-8b")
-    var cloudflareCleanupModel: String''',
+    var cloudflareCleanupModel: String
+
+    /// JSON map of model key to the languages it accepts, cached from the
+    /// worker. "*" means unrestricted, empty means auto-detect only.
+    @UserDefault(key: "cloudflareModelLanguages", defaultValue: "")
+    var cloudflareModelLanguages: String''',
         "AppPreferences: cloudflare keys",
     )
 
@@ -130,7 +135,15 @@ def patch_settings() -> None:
     }
 
     @Published var cloudflareModel: String {
-        didSet { AppPreferences.shared.cloudflareModel = cloudflareModel }
+        didSet {
+            AppPreferences.shared.cloudflareModel = cloudflareModel
+            // The new model may not accept the language the old one did.
+            let allowed = LanguageUtil.supportedLanguages(
+                engine: selectedEngine, fluidAudioModelVersion: fluidAudioModelVersion)
+            if !allowed.contains(selectedLanguage) {
+                selectedLanguage = allowed.first ?? "auto"
+            }
+        }
     }
 
     @Published var cloudflareCleanupEnabled: Bool {
@@ -417,6 +430,41 @@ enum OnboardingModelType {
         print("  = Onboarding: download no-op: already applied")
 
 
+def patch_language_util() -> None:
+    """Offer only the languages the selected cloud model actually accepts."""
+    path = APP / "Utils" / "LanguageUtil.swift"
+    patch(
+        path,
+        """    static func supportedLanguages(engine: String, fluidAudioModelVersion: String) -> [String] {
+        guard engine == "fluidaudio" else { return availableLanguages }
+        return fluidAudioModelVersion == "v2" ? parakeetV2Languages : parakeetV3Languages
+    }""",
+        """    static func supportedLanguages(engine: String, fluidAudioModelVersion: String) -> [String] {
+        if engine == "cloudflare" { return cloudflareLanguages() }
+        guard engine == "fluidaudio" else { return availableLanguages }
+        return fluidAudioModelVersion == "v2" ? parakeetV2Languages : parakeetV3Languages
+    }
+
+    /// Cloud models disagree about languages: Nova-3 on Cloudflare accepts ten
+    /// and hard errors on the rest, whisper-tiny-en is English only, and
+    /// Whisper base discards the setting entirely. Offering one list for all of
+    /// them produces failed dictations, so the worker's per-model list wins.
+    static func cloudflareLanguages() -> [String] {
+        let model = AppPreferences.shared.cloudflareModel
+        guard
+            let data = AppPreferences.shared.cloudflareModelLanguages.data(using: .utf8),
+            let map = try? JSONDecoder().decode([String: [String]].self, from: data),
+            let allowed = map[model]
+        else { return availableLanguages }
+
+        if allowed.contains("*") { return availableLanguages }
+        if allowed.isEmpty { return ["auto"] }
+        return ["auto"] + allowed.filter { availableLanguages.contains($0) }
+    }""",
+        "LanguageUtil: per-model languages",
+    )
+
+
 def patch_transcription_settings() -> None:
     """Relabel the shared prompt field as the vocabulary list it now holds."""
     path = APP / "Settings.swift"
@@ -472,6 +520,7 @@ def main() -> int:
         patch_service()
         patch_settings()
         patch_onboarding()
+        patch_language_util()
         patch_transcription_settings()
         patch_content_view()
     except PatchError as err:
