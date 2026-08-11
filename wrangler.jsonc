@@ -4,9 +4,13 @@
   "compatibility_date": "2026-08-01",
   "ai": { "binding": "AI" },
   "observability": { "enabled": true },
+  "durable_objects": {
+    "bindings": [{ "name": "USAGE", "class_name": "UsageCounter" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["UsageCounter"] }],
   "vars": {
     "DEFAULT_MODEL": "nova-3",
     "DEFAULT_CLEANUP_MODEL": "llama-8b",
-    "KEYTERMS": ""
+    "INITIAL_PROMPT": ""
   }
 }

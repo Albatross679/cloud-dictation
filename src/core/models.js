@@ -9,8 +9,8 @@ export const MODELS = {
     usdPerAudioMinute: 0.0052,
     freeAudioMinutesPerDay: 21,
     label: 'Deepgram Nova-3',
-    notes: 'Lowest latency, punctuation and diarization, accurate on long audio. No ASR-level vocabulary boosting on Cloudflare.',
-    options: ({ language, diarize, dictation, entities, keyterms }) => ({
+    notes: 'Lowest latency, punctuation and diarization, accurate on long audio. Ignores the initial prompt: the Cloudflare build supports no prompting parameter.',
+    options: ({ language, diarize, dictation, entities }) => ({
       punctuate: true,
       smart_format: true,
       numerals: true,
@@ -20,7 +20,7 @@ export const MODELS = {
       dictation: dictation || undefined,
       detect_entities: entities || undefined,
     }),
-    supportsVocabulary: false,
+    supportsInitialPrompt: false,
     readText: (r) => r?.results?.channels?.[0]?.alternatives?.[0]?.transcript,
   },
 
@@ -31,13 +31,13 @@ export const MODELS = {
     freeAudioMinutesPerDay: 214,
     label: 'Whisper large-v3-turbo',
     notes: 'Cheapest. Drops content on audio longer than roughly a minute.',
-    options: ({ language, keyterms }) => ({
+    options: ({ language, initialPrompt }) => ({
       task: 'transcribe',
       language: language === 'auto' ? undefined : language,
       vad_filter: true,
-      initial_prompt: keyterms.length ? `Vocabulary: ${keyterms.join(', ')}.` : undefined,
+      initial_prompt: initialPrompt || undefined,
     }),
-    supportsVocabulary: true,
+    supportsInitialPrompt: true,
     readText: (r) => r?.text ?? r?.transcription_info?.text,
   },
 
@@ -49,7 +49,19 @@ export const MODELS = {
     label: 'Whisper (base)',
     notes: 'Weakest on proper nouns and technical terms.',
     options: () => ({}),
-    supportsVocabulary: false,
+    supportsInitialPrompt: false,
+    readText: (r) => r?.text,
+  },
+
+  'whisper-tiny-en': {
+    id: '@cf/openai/whisper-tiny-en',
+    audio: AUDIO_BYTE_ARRAY,
+    usdPerAudioMinute: null,
+    freeAudioMinutesPerDay: null,
+    label: 'Whisper tiny (English)',
+    notes: 'Smallest and fastest. English only. Cloudflare lists no price for it.',
+    options: () => ({}),
+    supportsInitialPrompt: false,
     readText: (r) => r?.text,
   },
 };
@@ -82,7 +94,7 @@ export function catalog() {
     usdPerAudioMinute: m.usdPerAudioMinute,
     freeAudioMinutesPerDay: m.freeAudioMinutesPerDay,
     notes: m.notes,
-    supportsVocabulary: Boolean(m.supportsVocabulary),
+    supportsInitialPrompt: Boolean(m.supportsInitialPrompt),
     default: key === DEFAULT_MODEL,
   }));
 }

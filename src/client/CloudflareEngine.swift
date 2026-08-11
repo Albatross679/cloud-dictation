@@ -1,6 +1,96 @@
 import Foundation
 import AVFoundation
 
+/// Talks to the cloud-dictation worker. Shared by the transcription engine and
+/// the Test Connection button so both agree on what reachable means.
+struct CloudflareClient {
+    let endpoint: String
+    let token: String
+
+    enum ClientError: LocalizedError {
+        case notConfigured
+        case badStatus(Int, String)
+
+        var errorDescription: String? {
+            switch self {
+            case .notConfigured:
+                return "Set the worker endpoint and auth token first."
+            case let .badStatus(code, body):
+                if code == 401 { return "Rejected the auth token (401)." }
+                let detail = body.trimmingCharacters(in: .whitespacesAndNewlines)
+                return "Worker returned \(code)\(detail.isEmpty ? "" : ": \(detail)")"
+            }
+        }
+    }
+
+    private func request(_ path: String) throws -> URLRequest {
+        let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !token.isEmpty, let base = URL(string: trimmed) else {
+            throw ClientError.notConfigured
+        }
+        var request = URLRequest(url: base.appendingPathComponent(path))
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    /// Model keys the worker offers, e.g. ["nova-3", "whisper-turbo"].
+    func models() async throws -> [String] {
+        var req = try request("models")
+        req.timeoutInterval = 15
+
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else {
+            throw ClientError.badStatus(0, "")
+        }
+        guard http.statusCode == 200 else {
+            throw ClientError.badStatus(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+        }
+        return try JSONDecoder().decode(ModelsResponse.self, from: data).models.map(\.key)
+    }
+
+    func usage() async throws -> CloudflareUsage {
+        var req = try request("usage")
+        req.timeoutInterval = 15
+
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else {
+            throw ClientError.badStatus(0, "")
+        }
+        guard http.statusCode == 200 else {
+            throw ClientError.badStatus(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+        }
+        return try JSONDecoder().decode(CloudflareUsage.self, from: data)
+    }
+
+    func transcribe(fileURL: URL, query: [URLQueryItem]) async throws -> String {
+        var req = try request("transcribe")
+        var components = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)
+        components?.queryItems = query
+        req.url = components?.url
+        req.httpMethod = "POST"
+        req.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 300
+
+        let (data, response) = try await URLSession.shared.upload(for: req, fromFile: fileURL)
+        guard let http = response as? HTTPURLResponse else {
+            throw ClientError.badStatus(0, "")
+        }
+        guard http.statusCode == 200 else {
+            throw ClientError.badStatus(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+        }
+        return try JSONDecoder().decode(TranscriptionResponse.self, from: data).text
+    }
+
+    private struct ModelsResponse: Decodable {
+        struct Entry: Decodable { let key: String }
+        let models: [Entry]
+    }
+
+    private struct TranscriptionResponse: Decodable {
+        let text: String
+    }
+}
+
 /// Transcribes through a Cloudflare Worker backed by Workers AI.
 /// Audio never touches a local model: the recorded WAV is uploaded and the
 /// worker returns the finished text.
@@ -16,43 +106,21 @@ class CloudflareEngine: TranscriptionEngine {
 
     var isModelLoaded: Bool { reachable }
 
-    private var endpoint: String { AppPreferences.shared.cloudflareEndpoint }
-    private var token: String { AppPreferences.shared.cloudflareAuthToken }
-    private var model: String { AppPreferences.shared.cloudflareModel }
-    private var cleanupEnabled: Bool { AppPreferences.shared.cloudflareCleanupEnabled }
-    private var cleanupModel: String { AppPreferences.shared.cloudflareCleanupModel }
-    private var keyterms: String { AppPreferences.shared.cloudflareKeyterms }
+    static var client: CloudflareClient {
+        CloudflareClient(
+            endpoint: AppPreferences.shared.cloudflareEndpoint,
+            token: AppPreferences.shared.cloudflareAuthToken
+        )
+    }
 
     func initialize() async throws {
-        guard let base = URL(string: endpoint), !token.isEmpty else {
-            throw TranscriptionError.contextInitializationFailed
-        }
-
-        var request = URLRequest(url: base.appendingPathComponent("models"))
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 15
-
-        let (_, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw TranscriptionError.contextInitializationFailed
-        }
-
+        _ = try await Self.client.models()
         reachable = true
     }
 
     func transcribeAudio(url: URL, settings: Settings) async throws -> String {
-        guard let requestURL = buildURL(settings: settings) else {
-            throw TranscriptionError.contextInitializationFailed
-        }
-
         isCancelled = false
         onProgressUpdate?(0.05)
-
-        var request = URLRequest(url: requestURL)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 300
 
         // The worker reports no intermediate progress, so advance a slow bar
         // toward 0.9 while the round trip is in flight.
@@ -60,25 +128,13 @@ class CloudflareEngine: TranscriptionEngine {
         defer { stopHeartbeat() }
 
         let task = Task { () throws -> String in
-            let (data, response) = try await URLSession.shared.upload(for: request, fromFile: url)
-
-            guard let http = response as? HTTPURLResponse else {
-                throw TranscriptionError.processingFailed
-            }
-            guard http.statusCode == 200 else {
-                let body = String(data: data, encoding: .utf8) ?? ""
-                throw CloudflareEngineError.server(status: http.statusCode, body: body)
-            }
-
-            let decoded = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
-            return decoded.text
+            try await Self.client.transcribe(fileURL: url, query: Self.query(settings: settings))
         }
 
         uploadTask = task
         defer { uploadTask = nil }
 
         let text = try await task.value
-
         guard !isCancelled else { throw CancellationError() }
 
         onProgressUpdate?(0.95)
@@ -106,32 +162,27 @@ class CloudflareEngine: TranscriptionEngine {
         )
     }
 
-    private func buildURL(settings: Settings) -> URL? {
-        guard let base = URL(string: endpoint) else { return nil }
-        var components = URLComponents(
-            url: base.appendingPathComponent("transcribe"),
-            resolvingAgainstBaseURL: false
-        )
-
+    private static func query(settings: Settings) -> [URLQueryItem] {
+        let prefs = AppPreferences.shared
         var items = [
-            URLQueryItem(name: "model", value: model),
+            URLQueryItem(name: "model", value: prefs.cloudflareModel),
             URLQueryItem(name: "language", value: settings.selectedLanguage),
         ]
-        if cleanupEnabled {
-            items.append(URLQueryItem(name: "cleanup", value: "1"))
-            items.append(URLQueryItem(name: "cleanup_model", value: cleanupModel))
-            let instruction = settings.initialPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !instruction.isEmpty {
-                items.append(URLQueryItem(name: "instruction", value: instruction))
-            }
-        }
-        let terms = keyterms.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !terms.isEmpty {
-            items.append(URLQueryItem(name: "keyterms", value: terms))
+
+        // Settings > Transcription > Initial Prompt. Whisper takes it as a
+        // decoder prompt; Nova-3 has no prompting parameter, so it reaches the
+        // cleanup pass as context instead.
+        let prompt = settings.initialPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !prompt.isEmpty {
+            items.append(URLQueryItem(name: "initial_prompt", value: prompt))
         }
 
-        components?.queryItems = items
-        return components?.url
+        if prefs.cloudflareCleanupEnabled {
+            items.append(URLQueryItem(name: "cleanup", value: "1"))
+            items.append(URLQueryItem(name: "cleanup_model", value: prefs.cloudflareCleanupModel))
+        }
+
+        return items
     }
 
     private func startHeartbeat() {
@@ -151,19 +202,4 @@ class CloudflareEngine: TranscriptionEngine {
         heartbeat?.cancel()
         heartbeat = nil
     }
-}
-
-enum CloudflareEngineError: LocalizedError {
-    case server(status: Int, body: String)
-
-    var errorDescription: String? {
-        switch self {
-        case let .server(status, body):
-            return "Cloudflare worker returned \(status): \(body)"
-        }
-    }
-}
-
-private struct TranscriptionResponse: Decodable {
-    let text: String
 }

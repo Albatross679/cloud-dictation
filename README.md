@@ -58,16 +58,37 @@ The local Whisper engine compiles even when only the Cloudflare engine is used, 
 
 | Query param | Default | Meaning |
 |---|---|---|
-| `model` | `nova-3` | `nova-3`, `whisper-turbo`, `whisper` |
+| `model` | `nova-3` | `nova-3`, `whisper-turbo`, `whisper`, `whisper-tiny-en` |
 | `language` | `auto` | ISO code, or `auto` to detect |
 | `cleanup` | off | `1` runs an LLM pass to strip filler words and fix punctuation |
 | `cleanup_model` | `llama-8b` | `llama-8b`, `llama-3b`, `granite-micro`, `mistral-24b` |
-| `keyterms` | none | comma separated vocabulary the model should spell correctly |
+| `initial_prompt` | none | free text context: spellings, jargon, subject matter |
 | `instruction` | none | extra cleanup instruction, appended to the system prompt |
 | `diarize` | off | `1` labels speakers (nova-3 only) |
 | `dictation` | off | `1` interprets spoken punctuation (nova-3 only) |
 
-Server side defaults come from `vars` in `wrangler.jsonc`: `DEFAULT_MODEL`, `DEFAULT_CLEANUP_MODEL`, and `KEYTERMS` (merged with any per request terms).
+`GET /usage` reports today's audio seconds, neurons, free tier fraction, and billable dollars, plus 30 days of history. Counts live in a Durable Object so concurrent dictations cannot lose an increment. `POST /usage/reset` clears them.
+
+Server side defaults come from `vars` in `wrangler.jsonc`: `DEFAULT_MODEL`, `DEFAULT_CLEANUP_MODEL`, and `INITIAL_PROMPT`.
+
+## The initial prompt
+
+One field, Settings > Transcription > Initial Prompt, used differently per model:
+
+| Model | How it is used |
+|---|---|
+| `whisper-turbo` | native `initial_prompt` decoder prompt, biases the transcription itself |
+| `nova-3` | ignored by the recognizer, passed to the cleanup pass as context |
+| `whisper`, `whisper-tiny-en` | ignored by the recognizer, passed to the cleanup pass as context |
+
+**Nova-3 accepts no prompt of any kind.** Its input schema has no prompt or context field, and its two vocabulary parameters both dead end: `keyterm` returns "the selected Nova-3 model does not support keyterm prompting" and `keywords` returns "Keywords are not supported for Nova-3. Please use keyterm instead."
+
+## Metering
+
+Neurons are Cloudflare's billing unit. The worker derives them per request rather than querying billing, so no extra API credential is needed:
+
+1. Audio duration comes from the model when it reports one (`transcription_info.duration`), else the last word timestamp, else the WAV header.
+2. Neurons are duration times the model's published per minute rate. Verified against billing analytics: nova-3 bills 472.7 per audio minute, whisper turbo 46.6.
 
 ## Choosing a model
 
@@ -100,7 +121,8 @@ The LLM cleanup pass adds roughly $0.00015 per dictation, which rounds to nothin
 
 ## Careful points
 
-- **Vocabulary boosting does not work on Nova-3 here.** Cloudflare's build rejects `keyterm` ("model does not support keyterm prompting") and also rejects the legacy `keywords` ("use keyterm instead"). `keyterms` is therefore applied as a glossary in the cleanup prompt, and as `initial_prompt` on Whisper, which does support it.
+- **Deepgram Flux is not available here.** It is websocket only, so it cannot serve a file upload endpoint.
+- Derived neuron counts are an estimate of what Cloudflare will bill, not a reading of the invoice. The dashboard is the authority.
 - **The cleanup LLM will substitute words if you let it.** Before the glossary was added it rewrote "stream it from r 2" as "stream it from Redis". The system prompt now forbids guessing at garbled proper nouns. Put your own product names in `KEYTERMS`.
 - **Model ids drift.** `@cf/meta/llama-3.1-8b-instruct` currently routes to a variant deprecated on 2026-05-30 and fails through the binding while still working over REST. The registry in `src/core/cleanup.js` pins ids that were verified against the binding.
 - `initialize()` only checks that `/models` answers. A wrong model name surfaces on first transcription, not at connect time.

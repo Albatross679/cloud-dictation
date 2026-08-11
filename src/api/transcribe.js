@@ -1,9 +1,10 @@
 import { resolveModel, buildAudioInput, DEFAULT_MODEL } from '../core/models.js';
 import { cleanupText } from '../core/cleanup.js';
+import { audioSeconds, neuronsFor, utcDay } from '../core/usage.js';
 
 const MAX_BYTES = 25 * 1024 * 1024;
 
-export async function handleTranscribe(request, env) {
+export async function handleTranscribe(request, env, ctx) {
   const url = new URL(request.url);
   const modelKey = url.searchParams.get('model') || env.DEFAULT_MODEL || DEFAULT_MODEL;
   const model = resolveModel(modelKey);
@@ -22,11 +23,7 @@ export async function handleTranscribe(request, env) {
   const contentType = request.headers.get('content-type') || 'audio/wav';
   const started = Date.now();
 
-  const keyterms = [url.searchParams.get('keyterms'), env.KEYTERMS]
-    .filter(Boolean)
-    .flatMap((s) => s.split(','))
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const initialPrompt = (url.searchParams.get('initial_prompt') || env.INITIAL_PROMPT || '').trim();
 
   let raw;
   try {
@@ -37,7 +34,7 @@ export async function handleTranscribe(request, env) {
         diarize: url.searchParams.get('diarize') === '1',
         dictation: url.searchParams.get('dictation') === '1',
         entities: url.searchParams.get('entities') === '1',
-        keyterms,
+        initialPrompt,
       }),
     });
   } catch (err) {
@@ -50,6 +47,15 @@ export async function handleTranscribe(request, env) {
   const transcript = (model.readText(raw) || '').trim();
   const transcribeMs = Date.now() - started;
 
+  const seconds = audioSeconds(raw, bytes, contentType);
+  const neurons = neuronsFor(modelKey, seconds);
+  const record = env.USAGE.get(env.USAGE.idFromName('global')).fetch('https://usage/record', {
+    method: 'POST',
+    body: JSON.stringify({ day: utcDay(Date.now()), model: modelKey, seconds, neurons }),
+  });
+  if (ctx) ctx.waitUntil(record);
+  else await record;
+
   let text = transcript;
   let cleaned = false;
   let cleanupMs = 0;
@@ -61,7 +67,7 @@ export async function handleTranscribe(request, env) {
       const r = await cleanupText(env.AI, transcript, {
         instruction: url.searchParams.get('instruction'),
         model: url.searchParams.get('cleanup_model') || env.DEFAULT_CLEANUP_MODEL,
-        keyterms,
+        initialPrompt,
       });
       text = r.text;
       cleaned = r.cleaned;
@@ -77,6 +83,8 @@ export async function handleTranscribe(request, env) {
     model: modelKey,
     cleaned,
     bytes: bytes.length,
+    audio_seconds: seconds,
+    neurons: neurons,
     transcribe_ms: transcribeMs,
     cleanup_ms: cleanupMs || undefined,
     cleanup_error: cleanupError,

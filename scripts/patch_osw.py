@@ -49,10 +49,9 @@ def clone() -> None:
 
 
 def add_engine_file() -> None:
-    src = ROOT / "src" / "client" / "CloudflareEngine.swift"
-    dst = APP / "Engines" / "CloudflareEngine.swift"
-    shutil.copyfile(src, dst)
-    print(f"  + Engines/CloudflareEngine.swift")
+    for name, subdir in (("CloudflareEngine.swift", "Engines"), ("CloudflareUsageView.swift", "Engines")):
+        shutil.copyfile(ROOT / "src" / "client" / name, APP / subdir / name)
+        print(f"  + {subdir}/{name}")
 
 
 def patch_preferences() -> None:
@@ -77,10 +76,7 @@ def patch_preferences() -> None:
     var cloudflareCleanupEnabled: Bool
 
     @UserDefault(key: "cloudflareCleanupModel", defaultValue: "llama-8b")
-    var cloudflareCleanupModel: String
-
-    @UserDefault(key: "cloudflareKeyterms", defaultValue: "")
-    var cloudflareKeyterms: String''',
+    var cloudflareCleanupModel: String''',
         "AppPreferences: cloudflare keys",
     )
 
@@ -145,13 +141,18 @@ def patch_settings() -> None:
         didSet { AppPreferences.shared.cloudflareCleanupModel = cloudflareCleanupModel }
     }
 
-    @Published var cloudflareKeyterms: String {
-        didSet { AppPreferences.shared.cloudflareKeyterms = cloudflareKeyterms }
-    }
+    @Published var cloudflareTestStatus: CloudflareTestStatus = .idle
 
-    func reconnectCloudflare() {
+    func testCloudflareConnection() {
+        cloudflareTestStatus = .testing
         Task { @MainActor in
-            TranscriptionService.shared.reloadEngine()
+            do {
+                let models = try await CloudflareEngine.client.models()
+                cloudflareTestStatus = .ok("Connected. \(models.count) models available.")
+                TranscriptionService.shared.reloadEngine()
+            } catch {
+                cloudflareTestStatus = .failed(error.localizedDescription)
+            }
         }
     }
 
@@ -171,8 +172,7 @@ def patch_settings() -> None:
         self.cloudflareAuthToken = prefs.cloudflareAuthToken
         self.cloudflareModel = prefs.cloudflareModel
         self.cloudflareCleanupEnabled = prefs.cloudflareCleanupEnabled
-        self.cloudflareCleanupModel = prefs.cloudflareCleanupModel
-        self.cloudflareKeyterms = prefs.cloudflareKeyterms""",
+        self.cloudflareCleanupModel = prefs.cloudflareCleanupModel""",
         "Settings: init",
     )
 
@@ -219,6 +219,7 @@ def patch_settings() -> None:
                 Text("Nova-3 (fast, accurate)").tag("nova-3")
                 Text("Whisper turbo (cheapest)").tag("whisper-turbo")
                 Text("Whisper base").tag("whisper")
+                Text("Whisper tiny (English only)").tag("whisper-tiny-en")
             }
             .labelsHidden()
 
@@ -238,24 +239,197 @@ def patch_settings() -> None:
                     .foregroundColor(.secondary)
             }
 
-            Text("Vocabulary")
-                .font(.headline)
-            TextField("R2, Kubernetes, PyTorch", text: $viewModel.cloudflareKeyterms)
-                .textFieldStyle(.roundedBorder)
-            Text("Comma separated names the model should spell correctly.")
-                .font(.caption)
-                .foregroundColor(.secondary)
+            Divider()
 
-            Button("Test Connection") {
-                viewModel.reconnectCloudflare()
+            HStack(spacing: 10) {
+                Button("Test Connection") {
+                    viewModel.testCloudflareConnection()
+                }
+
+                switch viewModel.cloudflareTestStatus {
+                case .idle:
+                    EmptyView()
+                case .testing:
+                    ProgressView()
+                        .controlSize(.small)
+                case .ok(let message):
+                    Label(message, systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.caption)
+                case .failed(let message):
+                    Label(message, systemImage: "xmark.circle.fill")
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                }
             }
             .padding(.top, 4)
+
+            Text("Spoken vocabulary and context go in Transcription > Initial Prompt.")
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
         .padding(.vertical, 8)
     }
 
     private var modelSettings: some View {''',
         "Settings: cloudflare panel",
+    )
+
+
+def patch_onboarding() -> None:
+    """Offer Cloudflare as a first class choice on the welcome screen.
+
+    Onboarding blocks Continue until a model is downloaded. The cloud engine
+    has nothing to download, so it reports as already available.
+    """
+    settings = APP / "Settings.swift"
+
+    patch(
+        settings,
+        """enum OnboardingModelType {
+    case whisper(url: URL, size: Int)
+    case parakeet(version: String)
+}""",
+        """enum CloudflareTestStatus: Equatable {
+    case idle
+    case testing
+    case ok(String)
+    case failed(String)
+}
+
+enum OnboardingModelType {
+    case whisper(url: URL, size: Int)
+    case parakeet(version: String)
+    case cloudflare
+}""",
+        "Onboarding: model type",
+    )
+
+    patch(
+        settings,
+        """        case .parakeet(let version):
+            let repo = version == "v2" ? "parakeet-tdt-0.6b-v2-coreml" : "parakeet-tdt-0.6b-v3-coreml"
+            return URL(string: "https://huggingface.co/FluidInference/\\(repo)")
+        }""",
+        """        case .parakeet(let version):
+            let repo = version == "v2" ? "parakeet-tdt-0.6b-v2-coreml" : "parakeet-tdt-0.6b-v3-coreml"
+            return URL(string: "https://huggingface.co/FluidInference/\\(repo)")
+        case .cloudflare:
+            return nil
+        }""",
+        "Onboarding: hugging face link",
+    )
+
+    patch(
+        settings,
+        """struct OnboardingUnifiedModels {
+    static let availableModels = [
+        OnboardingUnifiedModel(
+            name: "Whisper V3 Large",""",
+        """struct OnboardingUnifiedModels {
+    static let availableModels = [
+        OnboardingUnifiedModel(
+            name: "Cloudflare",
+            isDownloaded: true,
+            description: "Runs online on Workers AI, nothing to download",
+            type: .cloudflare
+        ),
+        OnboardingUnifiedModel(
+            name: "Whisper V3 Large",""",
+        "Onboarding: cloudflare entry",
+    )
+
+    view = APP / "Onboarding" / "OnboardingView.swift"
+
+    patch(
+        view,
+        """            case .parakeet(let version):
+                updatedModel.isDownloaded = isFluidAudioModelDownloaded(version: version)
+            }""",
+        """            case .parakeet(let version):
+                updatedModel.isDownloaded = isFluidAudioModelDownloaded(version: version)
+            case .cloudflare:
+                updatedModel.isDownloaded = true
+            }""",
+        "Onboarding: availability",
+    )
+
+    patch(
+        view,
+        """        case .parakeet(let version):
+            AppPreferences.shared.selectedEngine = "fluidaudio"
+            AppPreferences.shared.fluidAudioModelVersion = version
+        }""",
+        """        case .parakeet(let version):
+            AppPreferences.shared.selectedEngine = "fluidaudio"
+            AppPreferences.shared.fluidAudioModelVersion = version
+        case .cloudflare:
+            AppPreferences.shared.selectedEngine = "cloudflare"
+        }""",
+        "Onboarding: selection",
+    )
+
+    # Auto-selecting the first available model highlights it without routing
+    # through selectModel, so the engine preference is never written. Commit
+    # whatever is highlighted when Continue is pressed.
+    patch(
+        view,
+        """    private func handleContinueButtonTap() {
+        appState.hasCompletedOnboarding = true
+    }""",
+        """    private func handleContinueButtonTap() {
+        if let selected = viewModel.unifiedModels.first(where: { $0.id == viewModel.selectedModelId }) {
+            viewModel.selectModel(selected)
+        }
+        appState.hasCompletedOnboarding = true
+    }""",
+        "Onboarding: commit selection on continue",
+    )
+
+    text = view.read_text()
+    if "case .cloudflare:\n            return\n" not in text:
+        anchor = """        switch model.type {
+        case .whisper(let url, _):
+            try await downloadWhisperModel(model: model, url: url)"""
+        if text.count(anchor) != 1:
+            raise PatchError("Onboarding: download switch anchor not unique")
+        view.write_text(
+            text.replace(
+                anchor,
+                """        switch model.type {
+        case .cloudflare:
+            return
+        case .whisper(let url, _):
+            try await downloadWhisperModel(model: model, url: url)""",
+            )
+        )
+        print("  + Onboarding: download no-op")
+    else:
+        print("  = Onboarding: download no-op: already applied")
+
+
+def patch_content_view() -> None:
+    """Show today's Cloudflare spend in the main window's hint column."""
+    path = APP / "ContentView.swift"
+    patch(
+        path,
+        """                                    Text("Drop audio file here to transcribe")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.leading, 4)
+                            }""",
+        """                                    Text("Drop audio file here to transcribe")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.leading, 4)
+
+                                if AppPreferences.shared.selectedEngine == "cloudflare" {
+                                    CloudflareUsageView(refreshToken: viewModel.recordings.count)
+                                }
+                            }""",
+        "ContentView: usage readout",
     )
 
 
@@ -267,6 +441,8 @@ def main() -> int:
         patch_preferences()
         patch_service()
         patch_settings()
+        patch_onboarding()
+        patch_content_view()
     except PatchError as err:
         print(f"\nFAILED: {err}", file=sys.stderr)
         print("Upstream changed. Fix the anchor in this script and rerun.", file=sys.stderr)
