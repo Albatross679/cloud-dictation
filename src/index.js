@@ -3,7 +3,7 @@ import { handleTranscribe } from './api/transcribe.js';
 import { catalog } from './core/models.js';
 import { CLEANUP_MODELS, DEFAULT_CLEANUP_MODEL } from './core/cleanup.js';
 import { UsageCounter } from './api/usage_counter.js';
-import { rateCard } from './core/usage.js';
+import { FREE_NEURONS_PER_DAY } from './core/usage.js';
 
 export { UsageCounter };
 
@@ -25,9 +25,9 @@ export default {
     if (url.pathname === '/models') {
       return Response.json({
         models: catalog(),
+        free_neurons_per_day: FREE_NEURONS_PER_DAY,
         cleanup_models: Object.keys(CLEANUP_MODELS),
         default_cleanup_model: DEFAULT_CLEANUP_MODEL,
-        rates: rateCard(),
       });
     }
 

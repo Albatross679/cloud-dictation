@@ -11,6 +11,6 @@
   "vars": {
     "DEFAULT_MODEL": "nova-3",
     "DEFAULT_CLEANUP_MODEL": "llama-8b",
-    "INITIAL_PROMPT": ""
+    "VOCABULARY": ""
   }
 }

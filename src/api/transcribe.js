@@ -51,7 +51,7 @@ export async function handleTranscribe(request, env, ctx) {
   const transcript = (model.readText(raw) || '').trim();
   const transcribeMs = Date.now() - started;
 
-  const seconds = audioSeconds(raw, bytes, contentType);
+  const seconds = audioSeconds(raw, bytes);
   const neurons = neuronsFor(modelKey, seconds);
   const record = env.USAGE.get(env.USAGE.idFromName('global')).fetch('https://usage/record', {
     method: 'POST',

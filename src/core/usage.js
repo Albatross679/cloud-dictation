@@ -1,5 +1,3 @@
-import { MODELS } from './models.js';
-
 export const FREE_NEURONS_PER_DAY = 10000;
 export const USD_PER_1K_NEURONS = 0.011;
 
@@ -12,10 +10,11 @@ const NEURONS_PER_AUDIO_MINUTE = {
   'whisper-tiny-en': 41.14,
 };
 
-/// Duration in seconds, preferring what the model reports and falling back to
-/// the WAV header. The desktop client always uploads 16 kHz PCM WAV, so one of
-/// the two always resolves.
-export function audioSeconds(raw, bytes, contentType) {
+/// Duration in seconds, preferring what the model reports, then the last word
+/// timestamp, then the WAV header. The desktop client always uploads 16 kHz PCM
+/// WAV, so one of the three always resolves. Returns 0 for a compressed file
+/// whose model reported no timings, which undercounts rather than guessing.
+export function audioSeconds(raw, bytes) {
   const reported =
     raw?.transcription_info?.duration ??
     raw?.metadata?.duration ??
@@ -64,15 +63,6 @@ export function usdFor(neurons) {
   return (neurons / 1000) * USD_PER_1K_NEURONS;
 }
 
-export function rateCard() {
-  return Object.keys(MODELS).map((key) => ({
-    key,
-    neuronsPerAudioMinute: NEURONS_PER_AUDIO_MINUTE[key] ?? null,
-    freeAudioMinutesPerDay: NEURONS_PER_AUDIO_MINUTE[key]
-      ? Math.floor(FREE_NEURONS_PER_DAY / NEURONS_PER_AUDIO_MINUTE[key])
-      : null,
-  }));
-}
 
 export function utcDay(nowMs) {
   return new Date(nowMs).toISOString().slice(0, 10);
