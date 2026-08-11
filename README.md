@@ -89,7 +89,17 @@ Server side defaults come from `vars` in `wrangler.jsonc`: `DEFAULT_MODEL`, `DEF
 
 ## Languages
 
-The picker is per model, because the models disagree and the worker is the authority. `GET /models` returns a `languages` array per model, the app caches it on connect, and a language a model cannot serve is rejected with a 400 naming the supported set rather than a 502 from the provider.
+Every engine's picker follows its own selected model, and no engine offers a language it will not honor:
+
+| Engine | Picker follows |
+|---|---|
+| Cloudflare | the worker's per-model list, cached on connect |
+| Whisper (local) | the downloaded `.bin`: `ggml-*.en.bin` is English only |
+| Parakeet (local) | the Parakeet version, and the choice now reaches the engine |
+
+Parakeet's `transcribe` has always taken a `language:` argument; upstream never passed one, so the filtered picker was decorative and every clip was auto-detected.
+
+For the cloud engine specifically, the worker is the authority. `GET /models` returns a `languages` array per model, the app caches it on connect, and a language a model cannot serve is rejected with a 400 naming the supported set rather than a 502 from the provider.
 
 | Model | Languages | Measured on Chinese audio |
 |---|---|---|

@@ -441,8 +441,18 @@ def patch_language_util() -> None:
     }""",
         """    static func supportedLanguages(engine: String, fluidAudioModelVersion: String) -> [String] {
         if engine == "cloudflare" { return cloudflareLanguages() }
+        if engine == "whisper" { return localWhisperLanguages() }
         guard engine == "fluidaudio" else { return availableLanguages }
         return fluidAudioModelVersion == "v2" ? parakeetV2Languages : parakeetV3Languages
+    }
+
+    /// whisper.cpp publishes English-only weights beside the multilingual ones,
+    /// named `ggml-<size>.en.bin`. Offering 23 languages for those produces
+    /// English output whatever is picked, so the list follows the file on disk.
+    static func localWhisperLanguages() -> [String] {
+        let path = AppPreferences.shared.selectedWhisperModelPath ?? ""
+        let name = (path as NSString).lastPathComponent.lowercased()
+        return name.contains(".en.") ? ["en"] : availableLanguages
     }
 
     /// Cloud models disagree about languages: Nova-3 on Cloudflare accepts ten
@@ -462,6 +472,23 @@ def patch_language_util() -> None:
         return ["auto"] + allowed.filter { availableLanguages.contains($0) }
     }""",
         "LanguageUtil: per-model languages",
+    )
+
+
+def patch_fluidaudio_engine() -> None:
+    """Pass the selected language to Parakeet, which accepts one and was never given it."""
+    path = APP / "Engines" / "FluidAudioEngine.swift"
+    patch(
+        path,
+        """        var decoderState = try TdtDecoderState(decoderLayers: await asrManager.decoderLayerCount)
+        let result = try await asrManager.transcribe(url, decoderState: &decoderState)""",
+        """        var decoderState = try TdtDecoderState(decoderLayers: await asrManager.decoderLayerCount)
+        // The picker already narrows the list per Parakeet version, but the
+        // engine ignored the choice and auto-detected. nil keeps auto-detect.
+        let language = Language(rawValue: settings.selectedLanguage)
+        let result = try await asrManager.transcribe(
+            url, decoderState: &decoderState, language: language)""",
+        "FluidAudioEngine: honor the language setting",
     )
 
 
@@ -521,6 +548,7 @@ def main() -> int:
         patch_settings()
         patch_onboarding()
         patch_language_util()
+        patch_fluidaudio_engine()
         patch_transcription_settings()
         patch_content_view()
     except PatchError as err:
