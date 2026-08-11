@@ -46,6 +46,22 @@ The local Whisper engine compiles even when only the Cloudflare engine is used, 
 
 `build_app.sh` signs ad hoc and ships under bundle id `local.clouddictation.OpenSuperWhisper` with the display name `OSW Cloud`, so it coexists with a stock OpenSuperWhisper install rather than sharing its preferences. If both are installed, give them different record hotkeys: the default is Option + backtick in each.
 
+## Packaging
+
+```bash
+./scripts/make_dmg.sh
+```
+
+Produces a drag-to-install `runs/OSW Cloud.dmg` of about 8 MB. Unsigned by default, which installs on the machine that built it and is refused by Gatekeeper everywhere else.
+
+Distribution needs an Apple Developer ID, after which the same script signs, notarizes, and staples:
+
+```bash
+./scripts/make_dmg.sh "Developer ID Application: Your Name (TEAMID)" your-notary-profile
+```
+
+The DMG format is not what makes an app distributable; notarization is. Upstream ships a notarized 11 MB DMG, which is why installing OpenSuperWhisper never required Xcode. The build toolchain (Xcode, cmake, Rust, libomp) is a cost for whoever builds the app, not for whoever installs it.
+
 ## API
 
 | Route | Auth | Purpose |
