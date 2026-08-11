@@ -190,7 +190,7 @@ The LLM cleanup pass adds roughly $0.00015 per dictation, which rounds to nothin
 - **Model ids drift.** `@cf/meta/llama-3.1-8b-instruct` currently routes to a variant deprecated on 2026-05-30 and fails through the binding while still working over REST. The registry in `src/core/cleanup.js` pins ids that were verified against the binding.
 - `initialize()` only checks that `/models` answers. A wrong model name surfaces on first transcription, not at connect time.
 - The worker holds the request open for the whole inference. A 20 minute file on Whisper turbo took 203 seconds.
-- An ad hoc signature means macOS treats each rebuild as a new app, so Microphone and Accessibility permissions need re-granting after a rebuild.
+- Run `scripts/create_signing_identity.sh` once before the first build. It creates a self-signed certificate so every build shares one signature, which is what lets macOS keep the Accessibility and Input Monitoring grants. Without it the build falls back to ad hoc and every rebuild silently invalidates them.
 
 ## Structure
 
