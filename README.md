@@ -25,7 +25,26 @@ openssl rand -hex 24 | tee .auth-token.local | npx wrangler secret put AUTH_TOKE
 python3 scripts/patch_osw.py
 ```
 
-Open `repos/OpenSuperWhisper/OpenSuperWhisper.xcodeproj`, build, then go to Settings > Models > Engine > Cloudflare and paste the endpoint and token.
+Then build and install the app:
+
+```bash
+./scripts/build_app.sh
+```
+
+Copy `repos/OpenSuperWhisper/build/Build/Products/Release/OpenSuperWhisper.app` to `/Applications`, then set Settings > Models > Engine > Cloudflare and paste the endpoint and token.
+
+## Build requirements
+
+| Need | Why | Install |
+|---|---|---|
+| Xcode | the app is an `.xcodeproj` | App Store, then `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer && sudo xcodebuild -license accept` and `xcodebuild -runFirstLaunch` |
+| cmake | builds `libwhisper` | `brew install cmake` |
+| Rust | builds the `asian-autocorrect` dylib the bridging header imports | `curl https://sh.rustup.rs -sSf \| sh` |
+| libomp | linked by `libwhisper` | `brew install libomp` |
+
+The local Whisper engine compiles even when only the Cloudflare engine is used, so all four are required.
+
+`build_app.sh` signs ad hoc and ships under bundle id `local.clouddictation.OpenSuperWhisper` with the display name `OSW Cloud`, so it coexists with a stock OpenSuperWhisper install rather than sharing its preferences. If both are installed, give them different record hotkeys: the default is Option + backtick in each.
 
 ## API
 
@@ -86,6 +105,7 @@ The LLM cleanup pass adds roughly $0.00015 per dictation, which rounds to nothin
 - **Model ids drift.** `@cf/meta/llama-3.1-8b-instruct` currently routes to a variant deprecated on 2026-05-30 and fails through the binding while still working over REST. The registry in `src/core/cleanup.js` pins ids that were verified against the binding.
 - `initialize()` only checks that `/models` answers. A wrong model name surfaces on first transcription, not at connect time.
 - The worker holds the request open for the whole inference. A 20 minute file on Whisper turbo took 203 seconds.
+- An ad hoc signature means macOS treats each rebuild as a new app, so Microphone and Accessibility permissions need re-granting after a rebuild.
 
 ## Structure
 

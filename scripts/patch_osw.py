@@ -40,7 +40,12 @@ def clone() -> None:
         return
     CHECKOUT.parent.mkdir(parents=True, exist_ok=True)
     print(f"Cloning {REPO}")
-    subprocess.run(["git", "clone", "--depth", "1", REPO, str(CHECKOUT)], check=True)
+    # whisper.cpp and asian-autocorrect are submodules, and Bridge.h imports
+    # headers from both. Without them the Swift target fails to compile.
+    subprocess.run(
+        ["git", "clone", "--depth", "1", "--recurse-submodules", "--shallow-submodules", REPO, str(CHECKOUT)],
+        check=True,
+    )
 
 
 def add_engine_file() -> None:
