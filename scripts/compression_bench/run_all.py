@@ -13,10 +13,17 @@ asks for a typed confirmation, because that is the point where money starts
 being spent.
 
 Each stage is skipped when its output is already complete, so an interrupted
-sequence can be re-run as-is. --grid-only and --probes-only run one half.
+sequence can be re-run as-is. The probes resume per measurement window, so the
+plan counts only the windows still to measure and the quiet-time estimate shrinks
+as they complete. --grid-only and --probes-only run one half.
+
+--max-windows N measures at most N more windows across the two probes and then
+stops cleanly, which is how the probes are run in short idle stretches rather
+than one long sitting.
 
     run_all.py --dry-run
     run_all.py --live
+    run_all.py --live --probes-only --max-windows 2
 """
 
 import argparse
@@ -28,6 +35,7 @@ import time
 import config as cfg
 import quiet_window as quiet
 import run as grid
+import window_log
 
 CONFIRMATION = "RUN LIVE"
 
@@ -43,7 +51,8 @@ class Stage:
     """One step of the sequence: what it runs, what it costs, whether it is done."""
 
     def __init__(self, key, title, argv, requests=0, cost=0.0, spends=False,
-                 done=False, done_note="", note=""):
+                 done=False, done_note="", note="", deferred=False, defer_note="",
+                 quiet_range=None):
         self.key = key
         self.title = title
         self.argv = argv
@@ -53,6 +62,11 @@ class Stage:
         self.done = done
         self.done_note = done_note
         self.note = note
+        self.deferred = deferred
+        self.defer_note = defer_note
+        # Low and high quiet seconds for the windows this stage runs, or None for
+        # a stage that needs no quiet at all.
+        self.quiet_range = quiet_range
 
 
 def read_jsonl(path):
@@ -132,47 +146,67 @@ def probe_done(path, dry_run):
         return False
 
 
-def probe_stages(dry_run, models, schedules):
-    """P1 and P2, each carrying its slice of the global window numbering."""
+def window_cost(schedule, indices, models):
+    """Cost of a probe's windows, over the indices named."""
+    per_minute = sum(cfg.usd_per_audio_minute(m) for m in models)
+    return sum(
+        schedule.windows[i].audio_seconds / len(models) / 60 * per_minute for i in indices
+    )
+
+
+def probe_stage(key, title_prefix, script, result_path, schedule, dry_run, models, budget):
+    """One probe, sized from the windows it still has to measure.
+
+    `budget` is how many windows this probe may measure in this run, or None for
+    all of them. A probe with windows left but no budget is deferred rather than
+    started, so the run stops cleanly on the count the captain asked for.
+    """
+    remaining = schedule.remaining_indices()
+    running = remaining if budget is None else remaining[:budget]
+    argv = [script, mode_flag(dry_run),
+            "--window-offset", str(schedule.offset), "--window-total", str(schedule.total)]
+    if budget is not None and running:
+        argv += ["--max-windows", str(len(running))]
+    mode_name = "dry run" if dry_run else "live run"
+    ranges = [schedule.window_range(i) for i in running]
+    return Stage(
+        key,
+        f"{title_prefix}: {len(running)} quiet window{'s' if len(running) != 1 else ''} "
+        f"of {len(schedule.windows)}, do not dictate inside them",
+        argv,
+        requests=sum(schedule.windows[i].requests for i in running),
+        cost=window_cost(schedule, running, models),
+        spends=True,
+        done=not remaining and probe_done(result_path, dry_run),
+        done_note=f"all {len(schedule.windows)} windows are checkpointed and "
+                  f"{result_path.name} holds a {mode_name}",
+        deferred=bool(remaining) and not running,
+        defer_note=f"{len(remaining)} window{'s' if len(remaining) != 1 else ''} left, and "
+                   f"--max-windows is already spent on the earlier probe",
+        note=f"{len(schedule.windows) - len(remaining)} of {len(schedule.windows)} windows "
+             f"already measured and checkpointed"
+             if len(remaining) != len(schedule.windows) else "",
+        quiet_range=(sum(low for low, _ in ranges), sum(high for _, high in ranges)),
+    )
+
+
+def probe_stages(dry_run, models, schedules, max_windows=None):
+    """P1 and P2, each carrying its slice of the global window numbering.
+
+    A window budget is spent in running order: P1 takes what it needs first, and
+    P2 gets whatever is left.
+    """
     billing, silence = schedules
-    total = len(billing.windows) + len(silence.windows)
-    billing_requests = sum(w.requests for w in billing.windows)
-    silence_requests = sum(w.requests for w in silence.windows)
-    billing_cost = sum(
-        w.audio_seconds / len(models) / 60 * sum(
-            cfg.usd_per_audio_minute(m) for m in models)
-        for w in billing.windows
-    )
-    silence_cost = sum(
-        w.audio_seconds / len(models) / 60 * sum(
-            cfg.usd_per_audio_minute(m) for m in models)
-        for w in silence.windows
-    )
+    billing_budget = max_windows
+    silence_budget = None
+    if max_windows is not None:
+        billing_budget = min(max_windows, len(billing.remaining_indices()))
+        silence_budget = max_windows - billing_budget
     return [
-        Stage(
-            "probe_billing",
-            f"P1 billing probe: {len(billing.windows)} quiet windows, do not dictate inside them",
-            ["probe_billing.py", mode_flag(dry_run),
-             "--window-offset", "0", "--window-total", str(total)],
-            requests=billing_requests,
-            cost=billing_cost,
-            spends=True,
-            done=probe_done(cfg.BILLING_PROBE_RESULT, dry_run),
-            done_note=f"{cfg.BILLING_PROBE_RESULT.name} already holds a "
-                      f"{'dry run' if dry_run else 'live run'}",
-        ),
-        Stage(
-            "probe_silence",
-            f"P2 silence probe: {len(silence.windows)} quiet windows, do not dictate inside them",
-            ["probe_silence.py", mode_flag(dry_run),
-             "--window-offset", str(len(billing.windows)), "--window-total", str(total)],
-            requests=silence_requests,
-            cost=silence_cost,
-            spends=True,
-            done=probe_done(cfg.SILENCE_PROBE_RESULT, dry_run),
-            done_note=f"{cfg.SILENCE_PROBE_RESULT.name} already holds a "
-                      f"{'dry run' if dry_run else 'live run'}",
-        ),
+        probe_stage("probe_billing", "P1 billing probe", "probe_billing.py",
+                    cfg.BILLING_PROBE_RESULT, billing, dry_run, models, billing_budget),
+        probe_stage("probe_silence", "P2 silence probe", "probe_silence.py",
+                    cfg.SILENCE_PROBE_RESULT, silence, dry_run, models, silence_budget),
     ]
 
 
@@ -180,16 +214,46 @@ def mode_flag(dry_run):
     return "--dry-run" if dry_run else "--live"
 
 
-def build_schedules(models):
-    """The two probes' windows, numbered as one sequence."""
+def completed_windows(result_path, dry_run, shape, keys):
+    """Indices of a probe's windows that its checkpoint log already holds, and
+    the settle times measured for them."""
+    measured = window_log.load_windows(
+        cfg.probe_windows_path(result_path, dry_run), dry_run, shape,
+        cfg.probe_windows_path(result_path, not dry_run))
+    indices = {i for i, key in enumerate(keys) if key in measured}
+    settles = [r.get("settle_seconds_observed") for r in measured.values()]
+    return indices, settles
+
+
+def build_schedules(models, dry_run):
+    """The two probes' windows, numbered as one sequence, with the windows their
+    checkpoint logs already hold marked off."""
     variants = read_jsonl(cfg.VARIANTS)
     billing = quiet.billing_windows(cfg.BILLING_PROBE_SPEEDS, cfg.BILLING_PROBE_REPLICATES,
                                     cfg.BILLING_PROBE_UTTERANCES, models, variants)
     silence = quiet.silence_windows(cfg.SILENCE_PROBE_PADDING_S, cfg.SILENCE_PROBE_REPEATS,
                                     models, cfg.SILENCE_PROBE_SPEECH_S)
     total = len(billing) + len(silence)
-    return (quiet.QuietSchedule(billing, offset=0, total=total),
-            quiet.QuietSchedule(silence, offset=len(billing), total=total))
+
+    billing_keys = [window_log.billing_key(replicate, speed)
+                    for replicate in range(1, cfg.BILLING_PROBE_REPLICATES + 1)
+                    for speed in cfg.BILLING_PROBE_SPEEDS]
+    silence_keys = [window_log.silence_key(p) for p in cfg.SILENCE_PROBE_PADDING_S]
+    billing_done, billing_settles = completed_windows(
+        cfg.BILLING_PROBE_RESULT, dry_run,
+        window_log.billing_shape(cfg.BILLING_PROBE_UTTERANCES, models), billing_keys)
+    silence_done, silence_settles = completed_windows(
+        cfg.SILENCE_PROBE_RESULT, dry_run,
+        window_log.silence_shape(cfg.SILENCE_PROBE_REPEATS, models, cfg.SILENCE_PROBE_SPEECH_S),
+        silence_keys)
+
+    schedules = (quiet.QuietSchedule(billing, offset=0, total=total, completed=billing_done),
+                 quiet.QuietSchedule(silence, offset=len(billing), total=total,
+                                     completed=silence_done))
+    for schedule, settles in zip(schedules, (billing_settles, silence_settles)):
+        for settle in settles:
+            schedule.observe(settle)
+    return schedules
 
 
 def print_plan(stages, schedules, dry_run, quiet_stages):
@@ -199,31 +263,48 @@ def print_plan(stages, schedules, dry_run, quiet_stages):
           f"{len(stages)} stages in order")
     print(quiet.rule("="))
     for number, stage in enumerate(stages, 1):
-        state = "already complete, will be skipped" if stage.done else "will run"
+        if stage.done:
+            state = "already complete, will be skipped"
+        elif stage.deferred:
+            state = "left for a later run"
+        else:
+            state = "will run"
         print(f"\n{number}. {stage.title}")
         print(f"   command: {' '.join(stage.argv)}")
         print(f"   status: {state}")
         if stage.done and stage.done_note:
             print(f"   {stage.done_note}")
+        if stage.deferred and stage.defer_note:
+            print(f"   {stage.defer_note}")
         if stage.requests:
             print(f"   {stage.requests} requests, ~${stage.cost:.2f}")
         if stage.note:
             print(f"   {stage.note}")
 
-    pending = [s for s in stages if not s.done]
+    pending = [s for s in stages if not s.done and not s.deferred]
     print(f"\n{quiet.rule('-')}")
     print(f"requests to send: {sum(s.requests for s in pending)}")
     print(f"estimated cost: ~${sum(s.cost for s in pending):.2f}")
     if quiet_stages:
         low = high = 0.0
         windows = 0
+        measured = 0
         for schedule in schedules:
             schedule_low, schedule_high = schedule.total_range()
             low += schedule_low
             high += schedule_high
-            windows += len(schedule.windows)
-        print(f"time you must not dictate: {quiet.format_range(low, high)}, "
-              f"split across {windows} measurement windows")
+            windows += len(schedule.remaining_indices())
+            measured += len(schedule.completed)
+        this_run = [s.quiet_range for s in pending if s.quiet_range]
+        run_low = sum(r[0] for r in this_run)
+        run_high = sum(r[1] for r in this_run)
+        print(f"time you must not dictate in this run: {quiet.format_range(run_low, run_high)}")
+        print(f"time you must not dictate to finish every probe: "
+              f"{quiet.format_range(low, high)}, split across {windows} measurement "
+              f"window{'s' if windows != 1 else ''} still to run")
+        if measured:
+            print(f"  {measured} window{'s' if measured != 1 else ''} already measured and "
+                  f"checkpointed, and no longer costing quiet time")
         print(f"  {schedules[0].basis()}")
         print("  the stages before the probes need no quiet at all")
         for schedule in schedules:
@@ -243,7 +324,7 @@ def confirm(stages, dry_run):
     """
     if dry_run:
         return True
-    paid = [s for s in stages if s.spends and not s.done and s.requests]
+    paid = [s for s in stages if s.spends and not s.done and not s.deferred and s.requests]
     if not paid:
         print("\nnothing left to pay for; no confirmation needed")
         return True
@@ -271,6 +352,9 @@ def run_stage(number, count, stage, python):
     print(quiet.rule("="))
     if stage.done:
         print(f"already complete, skipping: {stage.done_note}")
+        return 0
+    if stage.deferred:
+        print(f"left for a later run: {stage.defer_note}")
         return 0
     # -u so a stage's progress and its quiet-window banners reach the terminal as
     # they happen, including when the whole run is piped to a log.
@@ -302,6 +386,9 @@ def build_parser():
                         help="subset of models, applied to every stage")
     parser.add_argument("--plan-only", action="store_true",
                         help="print the plan and the quiet estimate, then stop")
+    parser.add_argument("--max-windows", type=int, default=None,
+                        help="measure at most this many more probe windows across both probes, "
+                             "then stop cleanly; the rest are left for a later run")
     return parser
 
 
@@ -327,17 +414,19 @@ def main():
         raise SystemExit(f"unknown models: {', '.join(unknown)}")
     if not cfg.VARIANTS.exists():
         raise SystemExit(f"missing {cfg.VARIANTS}; run prepare_corpus.py and compress.py first")
+    if args.max_windows is not None and args.max_windows < 1:
+        raise SystemExit("--max-windows must be at least 1")
 
     cfg.catalogue()
-    schedules = build_schedules(args.models)
     keys = selected_stage_keys(sys.argv[1:])
     available = {}
+    schedules = build_schedules(args.models, args.dry_run)
     if not args.probes_only:
         available["grid"] = grid_stage(args.dry_run, args.models, cfg.SPEEDS)
         available["score"] = score_stage(args.dry_run)
         available["report"] = report_stage(args.dry_run)
     if not args.grid_only:
-        for stage in probe_stages(args.dry_run, args.models, schedules):
+        for stage in probe_stages(args.dry_run, args.models, schedules, args.max_windows):
             available[stage.key] = stage
     stages = [available[key] for key in keys]
 
@@ -359,9 +448,20 @@ def main():
             return code
 
     print(f"\n{quiet.rule('=')}")
-    print(f"all {len(stages)} phases complete. Dictation is safe from here on.")
+    left = windows_left(args.models, args.dry_run) if not args.grid_only else 0
+    if left:
+        print(f"stopped cleanly: {left} measurement window{'s' if left != 1 else ''} still to "
+              f"measure. Every window already measured is checkpointed and will be skipped.")
+        print("Re-run this command in the next idle stretch to continue.")
+    else:
+        print(f"all {len(stages)} phases complete. Dictation is safe from here on.")
     print(quiet.rule("="))
     return 0
+
+
+def windows_left(models, dry_run):
+    """Probe windows still to measure, read back from the checkpoint logs."""
+    return sum(len(s.remaining_indices()) for s in build_schedules(models, dry_run))
 
 
 if __name__ == "__main__":

@@ -173,17 +173,30 @@ class QuietSchedule:
     `offset` and `total` let a probe number its windows inside a longer sequence
     the runner drives, so the captain sees "window 8 of 11" rather than a count
     that restarts at each probe.
+
+    `completed` holds the indices of windows already checkpointed. They keep
+    their numbers, so the sequence still reads the same, but the quiet-time
+    estimate counts only the windows still to run.
     """
 
-    def __init__(self, windows, offset=0, total=None):
+    def __init__(self, windows, offset=0, total=None, completed=None):
         self.windows = list(windows)
         self.offset = offset
         self.total = total if total is not None else offset + len(self.windows)
         self.observed_settles = []
+        self.completed = set(completed or ())
 
     def number(self, index):
         """Human window number, 1 based, in the full sequence."""
         return self.offset + index + 1
+
+    def mark_done(self, index):
+        """Record a window as measured, so it drops out of the estimate."""
+        self.completed.add(index)
+
+    def remaining_indices(self):
+        """Indices of the windows still to be measured, in running order."""
+        return [i for i in range(len(self.windows)) if i not in self.completed]
 
     def settle_bracket(self):
         """Low and high settle seconds per window, measured when anything has been."""
@@ -200,9 +213,14 @@ class QuietSchedule:
                 send + BOUNDARY_HOLD_MAX_S + settle_high)
 
     def range_from(self, index):
-        """Low and high quiet seconds over the windows from `index` onwards."""
+        """Low and high quiet seconds over the windows from `index` onwards.
+
+        Windows already measured cost nothing further and are left out.
+        """
         low = high = 0.0
         for i in range(index, len(self.windows)):
+            if i in self.completed:
+                continue
             window_low, window_high = self.window_range(i)
             low += window_low
             high += window_high
@@ -229,13 +247,21 @@ class QuietSchedule:
     def plan_lines(self):
         """The quiet part of the plan the runner prints before spending anything."""
         low, high = self.total_range()
+        remaining = self.remaining_indices()
+        measured = len(self.windows) - len(remaining)
+        headline = f"{len(remaining)} measurement windows still to run"
+        if measured:
+            headline += f", {measured} of {len(self.windows)} already measured"
         lines = [
-            f"{len(self.windows)} measurement windows, "
-            f"{sum(w.requests for w in self.windows)} requests inside them",
+            f"{headline}, {sum(self.windows[i].requests for i in remaining)} requests inside them",
             f"do not dictate for {format_range(low, high)} in total, split across those windows",
             self.basis(),
         ]
         for index, window in enumerate(self.windows):
+            if index in self.completed:
+                lines.append(f"  window {self.number(index)} of {self.total}: {window.label}, "
+                             f"already measured, no quiet needed")
+                continue
             window_low, window_high = self.window_range(index)
             lines.append(f"  window {self.number(index)} of {self.total}: {window.label}, "
                          f"{format_range(window_low, window_high)}")
@@ -263,7 +289,7 @@ class QuietSchedule:
     def close(self, index, settle_seconds=None, stream=None):
         """The block printed once a window has closed and its settle has finished."""
         window = self.windows[index]
-        remaining_windows = len(self.windows) - index - 1
+        remaining_windows = len([i for i in self.remaining_indices() if i > index])
         lines = [
             f"Window {self.number(index)} of {self.total} is closed and settled: {window.label}.",
             "",
@@ -273,11 +299,12 @@ class QuietSchedule:
             lines.append(f"Analytics settled {format_duration(settle_seconds)} after the window closed.")
         if remaining_windows:
             low, high = self.range_from(index + 1)
+            next_index = next(i for i in self.remaining_indices() if i > index)
             lines += [
                 "",
                 f"{remaining_windows} window{'s' if remaining_windows != 1 else ''} left in this "
                 f"probe, {format_range(low, high)} of quiet still to come.",
-                f"Stop dictating when window {self.number(index + 1)} of {self.total} is announced.",
+                f"Stop dictating when window {self.number(next_index)} of {self.total} is announced.",
                 f"{self.basis()[0].upper()}{self.basis()[1:]}.",
             ]
         else:

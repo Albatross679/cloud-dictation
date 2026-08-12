@@ -1141,6 +1141,9 @@ def main():
             f'measured; the horizontal one is the arithmetic already given above.'
             f'</figcaption></figure>')
         grid_body = (
+            f'<p>The p50 latencies were measured from a laptop over the public internet, so each '
+            f'one includes the network round-trip and is not model time alone, which makes the '
+            f'comparison between models more trustworthy than the absolute values.</p>'
             f'<figure class="tbl"><div class="tbl-scroll"><table class="data">'
             f'<thead><tr><th>Model</th><th class="n">r</th><th class="n">WER</th>'
             f'<th class="n">ΔWER</th><th class="n">95% CI</th><th class="n">Catastrophic</th>'
