@@ -1,13 +1,14 @@
 export const FREE_NEURONS_PER_DAY = 10000;
 export const USD_PER_1K_NEURONS = 0.011;
 
-/// Neurons per audio minute, from Cloudflare's published rates. Measured
-/// against billing analytics: nova-3 bills 472.7 and whisper turbo 46.6.
+/// Neurons per audio minute, every value read back from billing analytics
+/// rather than taken from the docs. Cloudflare publishes no price for
+/// whisper-tiny-en; 0.604 is measured over 10.5 minutes of audio.
 const NEURONS_PER_AUDIO_MINUTE = {
-  'nova-3': 472.7,
+  'nova-3': 472.73,
   'whisper-turbo': 46.63,
   whisper: 41.14,
-  'whisper-tiny-en': 41.14,
+  'whisper-tiny-en': 0.604,
 };
 
 /// Duration in seconds, preferring what the model reports, then the last word

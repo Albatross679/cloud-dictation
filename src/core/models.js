@@ -71,10 +71,12 @@ export const MODELS = {
   'whisper-tiny-en': {
     id: '@cf/openai/whisper-tiny-en',
     audio: AUDIO_BYTE_ARRAY,
-    usdPerAudioMinute: null,
-    freeAudioMinutesPerDay: null,
+    // Cloudflare lists no price. Derived from a measured 0.604 neurons per
+    // audio minute at $0.011 per 1000 neurons.
+    usdPerAudioMinute: 0.0000066,
+    freeAudioMinutesPerDay: 16556,
     label: 'Whisper tiny (English)',
-    notes: 'Ignores the vocabulary list. Smallest and fastest. English only by construction, so it cannot drift to another language. Cloudflare lists no price for it.',
+    notes: 'Ignores the vocabulary list. Smallest, fastest and by far the cheapest: 0.604 neurons per audio minute, so the daily free tier covers over 270 hours. English only by construction.',
     options: () => ({}),
     supportsVocabulary: false,
     supportsLanguage: 'en-only',

@@ -30,8 +30,9 @@ final class CloudflareUsageModel: ObservableObject {
 }
 
 /// Compact spend readout for the main window, shown only when transcription
-/// runs on Cloudflare. Neurons are Cloudflare's billing unit; the free tier
-/// resets at 00:00 UTC.
+/// runs on Cloudflare. Neurons are Cloudflare's billing unit. The window is a
+/// UTC day, not a local one, so it is labelled as such: west of UTC it rolls
+/// over during the evening and "today" would read as a bug.
 struct CloudflareUsageView: View {
     @StateObject private var model = CloudflareUsageModel()
 
@@ -79,7 +80,7 @@ struct CloudflareUsageView: View {
             : String(format: "%.1f min", minutes)
         let percent = Int((today.free_used_fraction * 100).rounded())
 
-        var line = "Today \(duration) · \(Int(today.neurons.rounded())) neurons · \(percent)% of free tier"
+        var line = "Since 00:00 UTC: \(duration) · \(Int(today.neurons.rounded())) neurons · \(percent)% of free tier"
         if today.billable_usd > 0 {
             line += String(format: " · $%.3f billable", today.billable_usd)
         }

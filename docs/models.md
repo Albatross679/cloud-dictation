@@ -6,8 +6,8 @@ Measured against this account, not quoted from vendor docs.
 |---|---|---|---|---|
 | Latency, 9s clip | **433 ms** | 1,382 ms | ~1,250 ms | ~900 ms |
 | WER, 3 min varied speech | **0.0%** | 24.3% | not measured | unusable |
-| $ per audio minute | 0.0052 | **0.000513** | 0.000453 | not listed |
-| Free tier, audio min/day | 21 | **214** | 243 | 243 |
+| $ per audio minute | 0.0052 | 0.000513 | 0.000453 | **0.0000066** |
+| Free tier, audio min/day | 21 | 214 | 243 | **16,556** |
 
 **Nova-3 is the default.** Its latency is a third of the alternatives, which is what dictation actually depends on, and it does not drop content.
 
@@ -63,15 +63,20 @@ An hour of audio, free tier excluded:
 | Nova-3 | 28,362 | $0.3120 |
 | Whisper turbo | 2,798 | $0.0308 |
 | Whisper base | 2,468 | $0.0272 |
+| Whisper tiny | 36 | $0.0004 |
 
 Nova-3 costs 10.1x Whisper turbo, a difference of $0.28 per hour of speech. The LLM cleanup pass adds about $0.00015 per dictation, which rounds to nothing beside the audio.
+
+Every rate below is read back from billing analytics rather than taken from the docs, because the docs list no price at all for `whisper-tiny-en` and assuming one was wrong by 68x: it bills 0.604 neurons per audio minute, not the 41.14 of Whisper base.
 
 The worker derives neurons per request rather than querying billing, so no extra API credential is needed:
 
 1. Audio duration comes from the model when it reports one (`transcription_info.duration`), else the last word timestamp, else the WAV header.
-2. Neurons are duration times the model's published per minute rate, verified against billing analytics: nova-3 bills 472.7 per audio minute, whisper turbo 46.6.
+2. Neurons are duration times the model's measured per minute rate: nova-3 472.73, whisper turbo 46.63, whisper base 41.14, whisper tiny 0.604.
 
 Derived counts estimate what Cloudflare will bill. The dashboard is the authority.
+
+The counter's window is a **UTC day**, matching when the free tier resets. West of UTC that rolls over during the evening, so the readout says "Since 00:00 UTC" rather than "Today".
 
 ## Careful points
 
