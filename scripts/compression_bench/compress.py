@@ -119,8 +119,8 @@ def main():
     print(f"  worst error     {worst_rel[0] * 100:.2f}% relative  ({worst_rel[1]})")
     print(f"                  {worst_abs[0] * 1000:.0f} ms absolute  ({worst_abs[1]})")
     print(f"  pooled error    {(billed - asked) / asked * 100:+.3f}% over all {len(variants)} variants")
-    for key, model in cfg.MODELS.items():
-        print(f"  {key:<16} ${billed * model['neurons_per_audio_minute'] * cfg.USD_PER_1000_NEURONS / 1000:.4f}")
+    for key in cfg.MODELS:
+        print(f"  {key:<16} ${billed * cfg.usd_per_audio_minute(key):.4f}")
 
 
 if __name__ == "__main__":

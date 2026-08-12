@@ -114,10 +114,11 @@ def fake_window(models, repeats, speech_s, file_s):
     billed = {}
     for model_key in models:
         seconds = speech_s if model_key == "nova-3" else file_s
-        rate = cfg.MODELS[model_key]["neurons_per_audio_minute"]
         billed[model_key] = {
             "requests": repeats,
-            "neurons": seconds * repeats / 60 * rate,
+            # Billed seconds are what the probe measures. Neurons are the
+            # cross-check, and a dry run has no neuron rate to synthesise one.
+            "neurons": 0.0,
             "audio_seconds": seconds * repeats,
             "inference_ms": 900.0 * repeats,
         }
@@ -175,6 +176,8 @@ def main():
     if not cfg.MANIFEST.exists():
         sys.exit(f"missing {cfg.MANIFEST}; run prepare_corpus.py first")
 
+    cfg.catalogue()
+
     with open(cfg.MANIFEST) as handle:
         manifest = [json.loads(line) for line in handle]
 
@@ -199,9 +202,7 @@ def main():
               f"off by {actual - expected:+.3f}s)")
 
     audio_minutes = sum(c["duration_s"] for c in clips) * args.repeats / 60
-    cost = sum(
-        audio_minutes * cfg.MODELS[m]["neurons_per_audio_minute"] for m in args.models
-    ) * cfg.USD_PER_1000_NEURONS / 1000
+    cost = sum(audio_minutes * cfg.usd_per_audio_minute(m) for m in args.models)
     print(f"\nP2 silence probe: {len(clips)} paddings x {len(args.models)} models x "
           f"{args.repeats} repeats")
     print(f"  {audio_minutes:.1f} audio minutes per model, ~${cost:.2f} total, "

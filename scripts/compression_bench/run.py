@@ -103,11 +103,12 @@ def fake_transcribe(variant, model_key, reference, rng):
         kept.append(word)
     if rng.random() < max(0.0, (degradation * penalty - 0.35)) * 0.5 and words:
         kept = (words[:3] + words[1:3] * 6)[:len(words)]
-    rate = cfg.MODELS[model_key]["neurons_per_audio_minute"]
     return {
         "text": " ".join(kept),
         "audio_seconds": variant["duration_s"],
-        "neurons": round(variant["duration_s"] / 60 * rate, 4),
+        # The worker publishes cost per audio minute, not neurons, so a
+        # synthesised response has no neuron figure to state.
+        "neurons": None,
         "transcribe_ms": int(400 + variant["duration_s"] * 60 * rng.uniform(0.9, 1.3)),
         "round_trip_ms": None,
         "language_mismatch": None,
@@ -137,6 +138,7 @@ def main():
     if not cfg.VARIANTS.exists():
         raise SystemExit(f"missing {cfg.VARIANTS}; run compress.py first")
 
+    cfg.catalogue()
     out_path = cfg.RUN_DIR / args.out if args.out else cfg.responses_path(args.dry_run)
     manifest = {}
     with open(cfg.MANIFEST) as handle:
@@ -170,9 +172,9 @@ def main():
     if args.live:
         billed = sum(v["duration_s"] for v, _ in pending) / 60
         cost = sum(
-            v["duration_s"] / 60 * cfg.MODELS[m]["neurons_per_audio_minute"]
+            v["duration_s"] / 60 * cfg.usd_per_audio_minute(m)
             for v, m in pending
-        ) * cfg.USD_PER_1000_NEURONS / 1000
+        )
         print(f"about to send {len(pending)} requests, {billed:.1f} billed minutes, ~${cost:.2f}")
         base_url = cfg.worker_url()
         token = cfg.auth_token()

@@ -1,11 +1,15 @@
 """Settled configuration for the audio compression benchmark.
 
 Every stage reads its parameters from here, so the experiment's scope lives in
-one file and the run is reproducible from it.
+one file and the run is reproducible from it. The billing figures are the
+exception: cost, free-tier reach and analytics ids are read from the deployed
+worker's catalogue at run time, through catalogue().
 """
 
 import os
 from pathlib import Path
+
+import catalogue as catalogue_source
 
 REPO = Path(__file__).resolve().parents[2]
 RUN_DIR = REPO / "runs" / "compression-bench"
@@ -26,6 +30,9 @@ DRY_RUN_RESULTS = RUN_DIR / "results.dry-run.json"
 DRY_RUN_REPORT = RUN_DIR / "report.dry-run.html"
 BILLING_PROBE_RESULT = PROBE_DIR / "billing.json"
 SILENCE_PROBE_RESULT = PROBE_DIR / "silence.json"
+# The worker's model catalogue as last fetched, so a run works while the worker
+# is unreachable and can say how old the rates it used are.
+CATALOGUE_CACHE = RUN_DIR / "models-catalogue.json"
 
 # LibriSpeech test-clean. Read audiobook speech, studio-clean, 40 speakers.
 CORPUS_URL = "https://www.openslr.org/resources/12/test-clean.tar.gz"
@@ -42,40 +49,28 @@ SAMPLE_RATE = 16000
 SPEEDS = [1.0, 1.5, 2.0, 2.5, 3.0]
 BASELINE_SPEED = 1.0
 
-# Model keys as the worker's /transcribe endpoint accepts them, with the
-# published neuron rate per audio minute used for the cost arithmetic and the
-# Cloudflare model id that billing analytics reports under.
+# Model keys as the worker's /transcribe endpoint accepts them, with the two
+# facts the benchmark holds about each one: how to name it in the report, and
+# whether pinning a language changes what it does. Every billing figure comes
+# from the worker's catalogue instead, through catalogue() below.
 MODELS = {
     "nova-3": {
         "label": "Deepgram Nova-3",
-        "model_id": "@cf/deepgram/nova-3",
-        "neurons_per_audio_minute": 472.73,
         "honors_language": True,
     },
     "whisper-turbo": {
         "label": "Whisper large-v3-turbo",
-        "model_id": "@cf/openai/whisper-large-v3-turbo",
-        "neurons_per_audio_minute": 46.63,
         "honors_language": True,
     },
     "whisper": {
         "label": "Whisper (base)",
-        "model_id": "@cf/openai/whisper",
-        "neurons_per_audio_minute": 41.14,
         "honors_language": False,
     },
     "whisper-tiny-en": {
         "label": "Whisper tiny (English)",
-        "model_id": "@cf/openai/whisper-tiny-en",
-        "neurons_per_audio_minute": 0.604,
         "honors_language": False,
     },
 }
-
-MODEL_BY_ID = {model["model_id"]: key for key, model in MODELS.items()}
-
-USD_PER_1000_NEURONS = 0.011
-FREE_NEURONS_PER_DAY = 10_000
 
 LANGUAGE = "en"
 CLEANUP = 0
@@ -180,16 +175,49 @@ def report_path(dry_run: bool) -> Path:
     return DRY_RUN_REPORT if dry_run else REPORT
 
 
+_catalogue = None
+
+
+def catalogue() -> catalogue_source.Catalogue:
+    """The worker's model catalogue, fetched once per process and announced once.
+
+    Every stage that costs anything goes through here, so a run states where its
+    rates came from before it prints a number derived from them.
+    """
+    global _catalogue
+    if _catalogue is None:
+        _catalogue = catalogue_source.load(
+            os.environ.get("CLOUD_DICTATION_WORKER", "").strip().rstrip("/"),
+            os.environ.get("CLOUD_DICTATION_TOKEN", "").strip(),
+            CATALOGUE_CACHE,
+        )
+        print(_catalogue.provenance())
+    return _catalogue
+
+
+def usd_per_audio_minute(model_key: str) -> float:
+    """Published cost of one minute of audio as the worker receives it."""
+    return catalogue().usd_per_audio_minute(model_key)
+
+
+def model_id(model_key: str) -> str:
+    """The `@cf/...` id billing analytics reports a model key under."""
+    return catalogue().model_id(model_key)
+
+
+def model_key_for_id(analytics_id: str) -> str:
+    """The worker's short key for an analytics id, or the id when it is unknown."""
+    return catalogue().key_for_model_id(analytics_id)
+
+
 def usd_per_hour(model_key: str, speed: float) -> float:
     """Cost of one hour of real speech at a compression factor."""
-    rate = MODELS[model_key]["neurons_per_audio_minute"]
-    return (rate / speed) * 60 * USD_PER_1000_NEURONS / 1000
+    return usd_per_audio_minute(model_key) / speed * 60
 
 
 def free_minutes_per_day(model_key: str, speed: float) -> float:
     """Minutes of real speech per day that stay inside the free allowance."""
-    rate = MODELS[model_key]["neurons_per_audio_minute"]
-    return FREE_NEURONS_PER_DAY / rate * speed
+    return catalogue().free_audio_minutes_per_day(model_key) * speed
 
 
 def worker_url() -> str:
@@ -201,14 +229,11 @@ def worker_url() -> str:
 
 
 def auth_token() -> str:
-    """Auth token from CLOUD_DICTATION_TOKEN, falling back to .auth-token.local."""
+    """Auth token from CLOUD_DICTATION_TOKEN, the only place it is read from."""
     token = os.environ.get("CLOUD_DICTATION_TOKEN", "").strip()
-    if token:
-        return token
-    local = REPO / ".auth-token.local"
-    if local.exists():
-        return local.read_text().strip()
-    raise SystemExit("set CLOUD_DICTATION_TOKEN or create .auth-token.local")
+    if not token:
+        raise SystemExit("set CLOUD_DICTATION_TOKEN to the worker's auth token")
+    return token
 
 
 def cloudflare_account() -> str:

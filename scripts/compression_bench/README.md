@@ -16,6 +16,14 @@ Cloudflare bills speech to text per audio minute, so time-compressing a recordin
 
 Everything above lives in `config.py`. Change it there, not in the stages.
 
+## Where the rates come from
+
+The per-minute price, the free minutes a day and the `@cf/...` id billing analytics reports each model under are read from the deployed worker's `GET /models` catalogue, once at the start of every run, dry or live. Nothing about billing is stored in this harness, so its numbers cannot drift away from the app that serves them. The endpoint is free and sends no audio.
+
+The response is cached to `runs/compression-bench/models-catalogue.json` with the time it was fetched, so a run still works while the worker is unreachable. A run served from that cache prints `STALE:` with the cache's timestamp and the reason the worker was not reached, and the report carries the same warning as a banner. Every report footer states when the catalogue it used was fetched.
+
+There are no built-in rates. When the worker cannot be reached and there is no cache, the run stops and names the two variables to set.
+
 ## The no-inference boundary
 
 Every stage except the live paths runs offline and free. The boundary is explicit in the code: `run.py`, `probe_billing.py` and `probe_silence.py` each require either `--dry-run` or `--live` and refuse to guess. Only `--live` reaches the worker, and only `--live` spends money.
@@ -98,24 +106,25 @@ Three facts about the analytics shape both probes:
 - The settle lag is measured, not assumed. Each window is polled at minute granularity until consecutive reads agree, and the observed lag is reported.
 - Windows are isolated by three filters together: the four speech model ids, `requestSource` = `unknown` (what a Worker AI binding reports, as against `rest api` for direct calls), and the minute range. The `tag` dimension is empty on every record in this account and cannot be used. Only dictation has to stop during a window, not all account AI traffic.
 
-The per-minute rates in `src/core/models.js` are already confirmed against this account's historical analytics, so neither probe needs to establish them.
+The per-minute rates the worker publishes are already confirmed against this account's historical analytics, so neither probe needs to establish them.
 
 ## Credentials
 
 | Variable | Used by | For |
 | --- | --- | --- |
-| `CLOUD_DICTATION_WORKER` | live paths only | the deployed worker's base URL |
-| `CLOUD_DICTATION_TOKEN` | live paths only | worker auth, falling back to `.auth-token.local` |
+| `CLOUD_DICTATION_WORKER` | every run | the deployed worker's base URL, for the model catalogue and for `/transcribe` on live paths |
+| `CLOUD_DICTATION_TOKEN` | every run | worker auth, read from the environment only |
 | `CLOUDFLARE_ACCOUNT_ID` | probes | the account the analytics query is scoped to |
 | `CLOUDFLARE_API_TOKEN` | probes | reading account analytics |
 
-Read from the environment, never hardcoded, never printed. The Cloudflare token is account-owned, so `GET /client/v4/user/tokens/verify` returns `Invalid API Token` for it and is not a valid preflight check; issuing the real GraphQL query is.
+Read from the environment, never hardcoded, never printed. A dry run needs the two worker variables as well, because it costs the same models from the same catalogue a live run does; without them it falls back to the cached catalogue and says so. The Cloudflare token is account-owned, so `GET /client/v4/user/tokens/verify` returns `Invalid API Token` for it and is not a valid preflight check; issuing the real GraphQL query is.
 
 ## The real run
 
 When the captain authorises inference, this is the command:
 
     CLOUD_DICTATION_WORKER=https://<worker>.workers.dev \
+    CLOUD_DICTATION_TOKEN=<token> \
     ../../runs/compression-bench/.venv/bin/python run_all.py --live
 
 That drives the stages below in order. Any of them still runs on its own, which is what `run_all.py` calls and what to reach for when only one stage needs redoing:
@@ -123,13 +132,16 @@ That drives the stages below in order. Any of them still runs on its own, which 
     ../../runs/compression-bench/.venv/bin/python run.py --live
     ../../runs/compression-bench/.venv/bin/python score.py --live
     ../../runs/compression-bench/.venv/bin/python report.py --live
+
+The probes are separately authorised and separately paid:
+
     ../../runs/compression-bench/.venv/bin/python probe_billing.py --live
     ../../runs/compression-bench/.venv/bin/python probe_silence.py --live
 
-`run.py --live` prints the request count, the billed minutes and the estimated cost before the first request. A probe run on its own numbers its own windows; `run_all.py` passes `--window-offset` and `--window-total` so the announcements count across both probes instead of restarting.
+`run.py --live` states where its rates came from, then prints the request count, the billed minutes and the estimated cost before the first request. A probe run on its own numbers its own windows; `run_all.py` passes `--window-offset` and `--window-total` so the announcements count across both probes instead of restarting.
 
 ## Tests
 
-The mode split and the resume log are covered by `test_response_log.py`. The quiet-window banners, the quiet-time estimate, the stage selection and the typed confirmation are covered by `test_run_plan.py`. Both use the standard library's `unittest` and need no dependency beyond `requirements.txt`. From `scripts/compression_bench/`:
+The mode split and the resume log are covered by `test_response_log.py`. The quiet-window banners, the quiet-time estimate, the stage selection and the typed confirmation are covered by `test_run_plan.py`. The model catalogue and the cost arithmetic built on it are covered by `test_catalogue.py`. All three use the standard library's `unittest`, open no socket, and need no dependency beyond `requirements.txt`. From `scripts/compression_bench/`:
 
-    ../../runs/compression-bench/.venv/bin/python -m unittest test_response_log test_run_plan -v
+    ../../runs/compression-bench/.venv/bin/python -m unittest test_response_log test_run_plan test_catalogue -v

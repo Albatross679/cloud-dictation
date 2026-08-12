@@ -1,8 +1,8 @@
 """Probe P1: do billed audio seconds fall proportionally with compression?
 
-The per-minute rates in src/core/models.js are already confirmed against this
-account's historical analytics, so establishing them is not this probe's job.
-What is still unknown is whether the same speech, time-compressed by r, is
+The per-minute rates come from the worker's own catalogue at run time and are
+already confirmed against this account's historical analytics, so establishing
+them is not this probe's job. What is still unknown is whether the same speech, time-compressed by r, is
 billed for 1/r of the seconds. That is the assumption the whole cost argument
 rests on, and it is what this probe measures.
 
@@ -55,7 +55,7 @@ def analytics_payload(start, end, models, account):
             "account": account,
             "start": iso(start),
             "end": iso(end),
-            "models": [cfg.MODELS[m]["model_id"] for m in models],
+            "models": [cfg.model_id(m) for m in models],
             "source": cfg.REQUEST_SOURCE,
         },
     }
@@ -96,7 +96,7 @@ def fold_groups(groups):
     totals = {}
     for group in groups:
         model_id = group["dimensions"]["modelId"]
-        key = cfg.MODEL_BY_ID.get(model_id, model_id)
+        key = cfg.model_key_for_id(model_id)
         row = totals.setdefault(key, {"requests": 0, "audio_seconds": 0.0, "neurons": 0.0,
                                       "inference_ms": 0.0})
         row["requests"] += group["count"]
@@ -186,11 +186,15 @@ def send_clip(session, path, model_key, base_url, token):
 
 
 def fake_clip(variant, model_key):
-    """What the worker would report, from the same duration it would measure."""
-    rate = cfg.MODELS[model_key]["neurons_per_audio_minute"]
+    """What the worker would report, from the same duration it would measure.
+
+    Billed seconds are the measured quantity and are synthesised here. Neurons
+    are the cross-check and are left out: the worker publishes cost per audio
+    minute, not a neuron rate, so a dry run has none to invent.
+    """
     return {
         "audio_seconds": variant["duration_s"],
-        "neurons": variant["duration_s"] / 60 * rate,
+        "neurons": None,
         "transcribe_ms": int(300 + variant["duration_s"] * 90),
     }
 
@@ -201,7 +205,7 @@ def fake_window(worker):
         key: {
             "requests": row["requests"],
             "audio_seconds": row["file_seconds"],
-            "neurons": row["file_seconds"] / 60 * cfg.MODELS[key]["neurons_per_audio_minute"],
+            "neurons": 0.0,
             "inference_ms": row["transcribe_ms"],
         }
         for key, row in worker.items()
@@ -289,6 +293,7 @@ def main():
     if not cfg.VARIANTS.exists():
         raise SystemExit(f"missing {cfg.VARIANTS}; run compress.py first")
 
+    cfg.catalogue()
     with open(cfg.VARIANTS) as handle:
         pool = [json.loads(line) for line in handle]
     batches = {}
@@ -303,8 +308,8 @@ def main():
 
     total_minutes = sum(sum(v["duration_s"] for v in b) for b in batches.values()) / 60
     cost = sum(
-        total_minutes * cfg.MODELS[m]["neurons_per_audio_minute"] for m in args.models
-    ) * cfg.USD_PER_1000_NEURONS / 1000 * args.replicates
+        total_minutes * cfg.usd_per_audio_minute(m) for m in args.models
+    ) * args.replicates
     print(f"P1 billing probe: {args.clips} clips at "
           f"{', '.join(f'{s:g}x' for s in args.speeds)}, {args.replicates} replicates")
     print(f"  models {', '.join(args.models)}")

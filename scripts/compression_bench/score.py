@@ -114,6 +114,7 @@ def main():
     parser.add_argument("--out", default=None, help="override the results path")
     args = parser.parse_args()
 
+    cfg.catalogue()
     responses_path = (cfg.RUN_DIR / args.responses if args.responses
                       else cfg.responses_path(args.dry_run))
     results_path = cfg.RUN_DIR / args.out if args.out else cfg.results_path(args.dry_run)
@@ -185,7 +186,9 @@ def main():
             cat = sum(c["catastrophic"] for c in cells) / len(cells)
             words = sum(c["ref_words"] for c in cells)
             lat = latency.get((model_key, speed), [])
-            passes = (
+            # bool() because the interval bounds are numpy scalars and a numpy
+            # boolean does not serialise to JSON.
+            passes = bool(
                 speed == cfg.BASELINE_SPEED
                 or (delta <= cfg.DELTA_WER_BUDGET
                     and hi <= cfg.DELTA_WER_CI_CEILING
