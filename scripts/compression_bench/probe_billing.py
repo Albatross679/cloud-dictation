@@ -15,14 +15,20 @@ to the short clips the benchmark actually runs on.
 The measured quantity is totalAudioSeconds, which is the billed quantity itself.
 totalNeurons is recorded alongside it as a cross-check.
 
-The settle is on completeness: the probe knows how many requests it sent, and
-polls at minute granularity until every model's billed request count equals that,
-then over one further read to confirm. A window that reaches the timeout with the
-counts still disagreeing is recorded as failed with its per-model shortfall and is
-re-measured, because a count below what was sent means this window's traffic had
-not all arrived and a count above it means another window's traffic was counted.
-The lag reported is the observed one: seconds from the window's own end to the
-first read that accounted for every request.
+The settle is on the bill having finished arriving: the probe knows how many
+requests it sent, and polls at minute granularity until every model's billed count
+has reached at least that and the counts then hold still across a further read. A
+window that reaches the timeout with a model still billed for less than it sent is
+recorded as failed with its per-model undercount and is re-measured. The lag
+reported is the observed one: seconds from the window's own end to the first read
+in which the whole bill had arrived.
+
+The platform bills more inferences than the client sends, so each window records
+its per-model excess as a result, and excess.py compares that rate across speeds:
+the ratio this probe measures is only meaningful when the excess does not differ
+between the speeds being compared. A window whose excess is far above what the
+platform produces is foreign traffic rather than a measurement, and is recorded
+for re-measurement.
 
 Consecutive windows are separated by a real gap, held from the closing window's
 end, so one window's analytics lag tail cannot land inside the next window's range.
@@ -49,6 +55,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 import config as cfg
+import excess
 import quiet_window as quiet
 import window_log
 
@@ -163,101 +170,137 @@ def billed_counts(totals, models):
     return {model_key: totals.get(model_key, {}).get("requests", 0) for model_key in models}
 
 
-def complete_read(totals, expected):
-    """True when the analytics account for exactly the requests the window sent.
+def arrived_read(totals, expected):
+    """True when every model's billed count has reached at least what it sent.
 
-    This is the invariant the probe can check, and stability cannot substitute for
-    it: analytics stay unchanged for a whole poll interval while data is still
-    arriving, and a read where one model has 3 of its 50 is as stable as a finished
-    one. A count above what was sent is as disqualifying as one below, because it
-    means another window's traffic is in this window's range.
+    A count below what was sent means this window's own traffic is still arriving,
+    which is the condition the settle waits out. A count above it is the platform:
+    Cloudflare bills more inferences than the client issues, so equality is not a
+    condition any window can meet.
     """
     billed = billed_counts(totals, expected)
-    return all(billed[model_key] == expected[model_key] for model_key in expected)
+    return all(billed[model_key] >= expected[model_key] for model_key in expected)
 
 
-def shortfall(totals, expected):
-    """Per-model rows naming what the analytics never accounted for."""
-    billed = billed_counts(totals, expected)
-    return [
-        {"model": model_key, "requests_sent": expected[model_key],
-         "requests_billed": billed[model_key],
-         "delta": billed[model_key] - expected[model_key]}
-        for model_key in sorted(expected)
-        if billed[model_key] != expected[model_key]
-    ]
+def excess_rows(totals, expected):
+    """Per-model billed minus sent, over every model the window sent to."""
+    return excess.rows(expected, billed_counts(totals, expected))
 
 
 class Settle:
     """One window's analytics read, and whether it is a measurement at all.
 
-    `complete` is false when the timeout was reached with the counts still
-    disagreeing. `totals` is then the last read, kept only so the disagreement can
-    be reported; nothing may be scored from it.
+    `complete` is false when the timeout was reached with a model still billed for
+    less than it sent. `totals` is then the last read, kept only so the undercount
+    can be reported; nothing may be scored from it.
+
+    `excess` carries every model's billed minus sent, which is a measured property
+    of the platform and part of the window's result. `implausible` holds the rows
+    whose excess is above what the platform produces, which reads as foreign
+    traffic inside the window; `usable` is false for such a window so it is
+    re-measured rather than averaged in.
 
     `lag_seconds` is what was observed, not inferred: seconds from the window's own
-    end to the first read that accounted for every request. `confirmed_seconds` is
-    the same for the read that confirmed it.
+    end to the first read in which the whole bill had arrived. `confirmed_seconds`
+    is the same for the read that confirmed it.
     """
 
-    def __init__(self, totals, complete, lag_seconds, confirmed_seconds, polls, missing):
+    def __init__(self, totals, complete, lag_seconds, confirmed_seconds, polls, missing,
+                 excess_rows=(), implausible=()):
         self.totals = totals
         self.complete = complete
         self.lag_seconds = lag_seconds
         self.confirmed_seconds = confirmed_seconds
         self.polls = polls
         self.missing = missing
+        self.excess = list(excess_rows)
+        self.implausible = list(implausible)
+
+    @property
+    def excess_rate(self):
+        return excess.rate(self.excess)
+
+    @property
+    def usable(self):
+        """True when this window is a measurement: the bill arrived and it is the platform's."""
+        return self.complete and not self.implausible
+
+
+def finished(totals, expected, previous):
+    """True when the bill has reached what was sent and stopped changing.
+
+    Arrival having finished is the condition, so the counts have to hold still as
+    well as clear the floor: reads keep coming in while the excess is still
+    landing, and a read taken mid-arrival would record part of it.
+    """
+    if not arrived_read(totals, expected):
+        return False
+    return previous is not None and billed_counts(totals, expected) == previous
 
 
 def settled_window(session, start, end, models, expected, fake=None):
-    """Poll a window until every model's billed count equals what it sent.
+    """Poll a window until the bill has finished arriving.
 
-    Completeness is confirmed over ANALYTICS_SETTLE_COMPLETE_READS consecutive reads, so
-    a count that matches once while data is still moving is not mistaken for the
-    end. Reaching the timeout without completeness returns a Settle with
-    `complete` false and the per-model shortfall in `missing`.
+    Two things have to be true together, and over
+    ANALYTICS_SETTLE_COMPLETE_READS consecutive reads: every model billed for at
+    least what it sent, and the counts unchanged from the read before. Stability
+    alone is not enough, which is what a live run proved when a read showing 3 of
+    one model's 50 requests held still for a whole poll interval.
+
+    Reaching the timeout with a model still billed for less than it sent returns a
+    Settle with `complete` false and the per-model undercount in `missing`.
     """
     if fake is not None:
         print("  dry run, not polling for the analytics to settle")
-        missing = shortfall(fake, expected)
-        return Settle(fake, not missing, None, None, 0, missing)
+        rows = excess_rows(fake, expected)
+        missing = excess.undercounts(rows)
+        return Settle(fake, not missing, None, None, 0, missing, rows,
+                      excess.implausible(rows))
 
     closed = end
     deadline = time.monotonic() + cfg.ANALYTICS_SETTLE_TIMEOUT_S
-    completions = 0
+    holds = 0
     polls = 0
-    first_complete_lag = None
+    first_finished_lag = None
+    previous = None
     totals = {}
     while True:
         totals = read_window(session, start, end, models)
         polls += 1
         lag = (datetime.now(timezone.utc) - closed).total_seconds()
-        if complete_read(totals, expected):
-            completions += 1
-            if first_complete_lag is None:
-                first_complete_lag = lag
-            if completions >= cfg.ANALYTICS_SETTLE_COMPLETE_READS:
-                print(f"  complete after {first_complete_lag:.0f} s, confirmed at "
-                      f"{lag:.0f} s, {polls} reads: every model billed exactly what "
-                      f"the window sent")
-                return Settle(totals, True, first_complete_lag, lag, polls, [])
+        rows = excess_rows(totals, expected)
+        if finished(totals, expected, previous):
+            holds += 1
+            if first_finished_lag is None:
+                first_finished_lag = lag
+            if holds >= cfg.ANALYTICS_SETTLE_COMPLETE_READS:
+                flagged = excess.implausible(rows)
+                print(f"  the whole bill had arrived by {first_finished_lag:.0f} s, held to "
+                      f"{lag:.0f} s over {polls} reads: {excess.describe_rate(rows)}")
+                if flagged:
+                    print(f"  that excess is above the {cfg.EXCESS_IMPLAUSIBLE_ABOVE:.0%} the "
+                          f"platform produces: {excess.describe(flagged)}")
+                    print("  this window reads as foreign traffic and is recorded for "
+                          "re-measurement, not as a result")
+                return Settle(totals, True, first_finished_lag, lag, polls, [], rows, flagged)
         else:
-            completions = 0
-            first_complete_lag = None
-        missing = shortfall(totals, expected)
+            holds = 0
+            first_finished_lag = None
+        previous = billed_counts(totals, expected)
+        missing = excess.undercounts(rows)
         if time.monotonic() >= deadline:
-            print(f"  gave up after {cfg.ANALYTICS_SETTLE_TIMEOUT_S} s with the counts still "
-                  f"disagreeing: {window_log.describe_mismatches(missing)}")
+            print(f"  gave up after {cfg.ANALYTICS_SETTLE_TIMEOUT_S} s with models still billed "
+                  f"for less than they sent: {excess.describe(missing)}")
             print("  this window is recorded as failed, not as a result")
-            return Settle(totals, False, None, None, polls, missing)
+            return Settle(totals, False, None, None, polls, missing, rows)
         if missing:
             print(f"    {lag:.0f} s after the window closed, still short: "
-                  f"{window_log.describe_mismatches(missing)}")
+                  f"{excess.describe(missing)}")
         else:
-            print(f"    {lag:.0f} s after the window closed: every count matches, "
-                  f"{completions} of {cfg.ANALYTICS_SETTLE_COMPLETE_READS} confirming reads")
+            print(f"    {lag:.0f} s after the window closed: {excess.describe_rate(rows)}, "
+                  f"{holds} of {cfg.ANALYTICS_SETTLE_COMPLETE_READS} unchanged reads")
         quiet.sleep_with_progress(cfg.ANALYTICS_POLL_INTERVAL_S,
-                                  "still quiet, waiting for every request to be billed")
+                                  "still quiet, waiting for the whole bill to arrive")
 
 
 def send_clip(session, path, model_key, base_url, token):
@@ -495,6 +538,11 @@ def main():
             "settle_seconds_observed": settle.lag_seconds,
             "settle_seconds_confirmed": settle.confirmed_seconds,
             "analytics_reads": settle.polls,
+            # The excess is a measured property of the platform, so it travels with
+            # the window it was measured in rather than being warned about once.
+            "excess": settle.excess,
+            "excess_rate": settle.excess_rate,
+            "excess_implausible": settle.implausible,
             "models": rows,
         }
         if not settle.complete:
@@ -504,7 +552,7 @@ def main():
         # of the measured set so it is re-measured rather than scored. It cost the
         # same money as a good one, so it still counts against --max-windows.
         measured_now += 1
-        if settle.complete:
+        if settle.usable:
             measured[plan["key"]] = record
             schedule.observe(settle.lag_seconds)
             hold_seconds = quiet.boundary_hold_seconds(schedule.observed_settles)
@@ -516,12 +564,20 @@ def main():
             ratio = "n/a" if row["audio_seconds_ratio"] is None else f"{row['audio_seconds_ratio']:.4f}"
             print(f"  {row['model']:<17} billed {row['audio_seconds_billed']:>9.1f} s  "
                   f"sent {row['audio_seconds_sent']:>9.1f} s  ratio {ratio}")
-        if settle.complete:
+        if settle.usable:
+            print(f"  billing excess this window: {excess.describe_rate(settle.excess)}")
             print(f"  checkpointed window {window_index + 1} of {len(planned)} to "
                   f"{checkpoint.name}")
+        elif settle.complete:
+            print(f"  recorded window {window_index + 1} of {len(planned)} for re-measurement "
+                  f"in {checkpoint.name}: excess above the "
+                  f"{cfg.EXCESS_IMPLAUSIBLE_ABOVE:.0%} the platform produces, "
+                  f"{excess.describe(settle.implausible)}")
+            print("  that reads as foreign traffic in the window, so no ratio is computed "
+                  "from it")
         else:
             print(f"  recorded window {window_index + 1} of {len(planned)} as failed in "
-                  f"{checkpoint.name}: {window_log.describe_mismatches(settle.missing)}")
+                  f"{checkpoint.name}: {excess.describe(settle.missing)}")
             print("  it is not a measurement and will be re-measured; no ratio is computed "
                   "from it")
         hold_boundary_gap(end, hold_seconds, args.dry_run)
@@ -545,6 +601,14 @@ def main():
     ]
 
     baseline = cfg.BASELINE_SPEED
+    # The excess is compared across speeds before any ratio is reported, because a
+    # rate that differs between 1x and 3x biases the ratio itself.
+    comparison = excess.compare_speeds(measured.values(), baseline)
+    print()
+    print(comparison["statement"])
+    if not comparison["comparable"]:
+        print("no billing ratio is published from these windows; re-measure before quoting one")
+
     per_model = {}
     for model_key in args.models:
         def billed_at(window_speed, replicate):
@@ -575,11 +639,13 @@ def main():
         per_model[model_key] = {
             "billed_as_sent": bool(as_sent) and all(as_sent),
             "proportionality": proportionality,
+            "ratio_trustworthy": comparison["comparable"],
         }
         for speed, row in proportionality.items():
             observed = "n/a" if row["observed_billed_fraction"] is None else f"{row['observed_billed_fraction']:.4f}"
+            trust = "" if comparison["comparable"] else "  (not trustworthy: excess differs by speed)"
             print(f"{model_key:<17} {speed}x billed {observed} of 1x, "
-                  f"expected {row['expected_billed_fraction']:.4f}")
+                  f"expected {row['expected_billed_fraction']:.4f}{trust}")
 
     settle_observed = [w["settle_seconds_observed"] for rep in replicates for w in rep["windows"]
                        if w["settle_seconds_observed"] is not None]
@@ -595,6 +661,8 @@ def main():
         "request_source_filter": cfg.REQUEST_SOURCE,
         "tolerance": TOLERANCE,
         "measurement_span": span,
+        "billing_excess": comparison,
+        "ratio_trustworthy": comparison["comparable"],
         "settle_seconds_observed": {
             "mean": sum(settle_observed) / len(settle_observed) if settle_observed else None,
             "max": max(settle_observed) if settle_observed else None,

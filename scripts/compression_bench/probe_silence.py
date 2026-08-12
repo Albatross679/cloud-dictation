@@ -11,10 +11,14 @@ metered, which is what Nova-3 is known to do and what the Whisper family has
 never been checked for.
 
 This probe reads the same analytics P1 does and settles the same way: it polls
-until every model's billed request count equals what the padding's window sent,
-confirms that over one further read, and records the window as failed rather than
-as a result when the counts never agree. Consecutive windows are held a real gap
-apart so one window's analytics lag cannot land inside the next window's range.
+until every model's billed request count has reached at least what the padding's
+window sent and the counts hold still across a further read, and records the
+window as failed rather than as a result when a model stays billed for less than
+it sent. The platform bills more inferences than the client sends, so each window
+records its per-model excess, and a window whose excess is far above what the
+platform produces is recorded for re-measurement instead. Consecutive windows are
+held a real gap apart so one window's analytics lag cannot land inside the next
+window's range.
 
 Each padding's window is checkpointed to silence.windows.jsonl the moment it
 closes and settles, so the probe can be run in short idle stretches: a re-run
@@ -39,6 +43,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 import config as cfg
+import excess
 import quiet_window as quiet
 import window_log
 from probe_billing import (floor_minute, hold_boundary_gap, iso, sent_counts, settled_window,
@@ -334,6 +339,11 @@ def main():
             "settle_seconds_observed": settle.lag_seconds,
             "settle_seconds_confirmed": settle.confirmed_seconds,
             "analytics_reads": settle.polls,
+            # The excess is a measured property of the platform, so it travels with
+            # the window it was measured in rather than being warned about once.
+            "excess": settle.excess,
+            "excess_rate": settle.excess_rate,
+            "excess_implausible": settle.implausible,
             "models": rows,
         }
         if not settle.complete:
@@ -343,7 +353,7 @@ def main():
         # of the measured set so it is re-measured rather than scored. It cost the
         # same money as a good one, so it still counts against --max-windows.
         measured_now += 1
-        if settle.complete:
+        if settle.usable:
             measured[plan["key"]] = record
             schedule.observe(settle.lag_seconds)
             hold_seconds = quiet.boundary_hold_seconds(schedule.observed_settles)
@@ -351,12 +361,20 @@ def main():
         else:
             log.corrupt[plan["key"]] = record
         schedule.close(window_index, settle_seconds=settle.lag_seconds)
-        if settle.complete:
+        if settle.usable:
+            print(f"  billing excess this window: {excess.describe_rate(settle.excess)}")
             print(f"  checkpointed window {window_index + 1} of {len(planned)} to "
                   f"{checkpoint.name}")
+        elif settle.complete:
+            print(f"  recorded window {window_index + 1} of {len(planned)} for re-measurement "
+                  f"in {checkpoint.name}: excess above the "
+                  f"{cfg.EXCESS_IMPLAUSIBLE_ABOVE:.0%} the platform produces, "
+                  f"{excess.describe(settle.implausible)}")
+            print("  that reads as foreign traffic in the window, so no slope is fitted "
+                  "through it")
         else:
             print(f"  recorded window {window_index + 1} of {len(planned)} as failed in "
-                  f"{checkpoint.name}: {window_log.describe_mismatches(settle.missing)}")
+                  f"{checkpoint.name}: {excess.describe(settle.missing)}")
             print("  it is not a measurement and will be re-measured; no slope is fitted "
                   "through it")
         hold_boundary_gap(end, hold_seconds, args.dry_run)

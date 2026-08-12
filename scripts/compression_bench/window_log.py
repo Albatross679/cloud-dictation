@@ -23,17 +23,21 @@ run, because windows measured from different batches are not comparable. The
 timestamps are reported and stored, so a run split across days shows the gap.
 
 A checkpoint only counts as a measurement when every model's billed request count
-equals what that window sent. Analytics that were still arriving, or that carried
-a neighbouring window's traffic, produce a record whose counts disagree, and every
-ratio computed from such a window is meaningless. Those records are held back from
-the measured set by load_windows, so the probe treats the window as still to
-measure and no result is written from it. The check reads the counts in the record
-itself, so a window written before this check existed is classified the same way.
+has reached at least what that window sent, and the excess above that is within
+what the platform itself produces. Analytics still arriving leave a count below
+what was sent, and another source's traffic inside the window leaves an excess far
+above the platform's; every ratio computed from either is meaningless. Those
+records are held back from the measured set by load_windows, so the probe treats
+the window as still to measure and no result is written from it. The checks read
+the counts in the record itself, so a window written before they existed is
+classified the same way.
 """
 
 import json
 from datetime import datetime, timezone
 
+import config as cfg
+import excess
 import response_log
 
 
@@ -82,44 +86,52 @@ def silence_shape(repeats, models, speech_seconds):
             "speech_seconds": round(float(speech_seconds), 3)}
 
 
-def count_mismatches(record):
-    """Model rows of a record whose billed request count differs from what was sent.
+def undercounts(record):
+    """Model rows of a record billed for less than the window sent them.
 
-    An empty list means the analytics accounted for exactly the traffic the window
-    sent, which is the condition under which the window's audio-seconds ratio means
-    anything.
+    An empty list means the whole bill for that window had arrived, which is the
+    condition under which the window's audio-seconds ratio means anything. Billed
+    above sent is the platform's own excess and is a result, not a fault.
     """
-    mismatches = []
-    for row in record.get("models") or ():
-        sent = row.get("requests_sent")
-        billed = row.get("requests_billed")
-        if sent is None or billed is None:
-            continue
-        if billed != sent:
-            mismatches.append({
-                "model": row.get("model"),
-                "requests_sent": sent,
-                "requests_billed": billed,
-                "delta": billed - sent,
-            })
-    return mismatches
+    return excess.undercounts(excess.record_rows(record))
 
 
-def describe_mismatches(mismatches):
-    """Per-model shortfall or excess, as one line the operator can read."""
-    return ", ".join(
-        f"{m['model']} sent {m['requests_sent']} billed {m['requests_billed']} "
-        f"({m['delta']:+d})"
-        for m in mismatches
-    )
+def implausible_excess(record):
+    """Model rows whose excess is above what the platform has been measured to produce.
+
+    Such a window reads as another source's traffic having entered it, so it is
+    refused and re-measured rather than averaged in.
+    """
+    return excess.implausible(excess.record_rows(record))
+
+
+def refusal(record):
+    """Why this window is not a measurement, or None when it is one.
+
+    Read from the counts in the record itself, so a window written before these
+    checks existed is classified the same way as one written after.
+    """
+    if record.get("settled") is False:
+        return "recorded as failed"
+    missing = undercounts(record)
+    if missing:
+        return f"billed for less than it sent: {excess.describe(missing)}"
+    flagged = implausible_excess(record)
+    if flagged:
+        rows = excess.record_rows(record)
+        return (f"excess above the {cfg.EXCESS_IMPLAUSIBLE_ABOVE:.0%} the platform produces, "
+                f"which reads as foreign traffic in the window: {excess.describe(flagged)} "
+                f"({excess.describe_rate(rows)})")
+    return None
 
 
 class WindowLog:
     """A probe's checkpoints, split into the windows that count and the ones that do not.
 
-    `measured` holds the windows whose billed counts equal what they sent, keyed by
-    window key. `corrupt` holds the rest: windows the analytics never fully
-    accounted for. A key appearing more than once keeps its last record, so
+    `measured` holds the windows whose whole bill arrived and whose excess is the
+    platform's own, keyed by window key. `corrupt` holds the rest: windows the
+    analytics never fully accounted for, and windows carrying more excess than the
+    platform produces. A key appearing more than once keeps its last record, so
     re-measuring a corrupt window supersedes it.
     """
 
@@ -130,13 +142,13 @@ class WindowLog:
         self.measured = {}
         self.corrupt = {}
         for key, record in latest.items():
-            if record.get("settled") is False or count_mismatches(record):
+            if refusal(record):
                 self.corrupt[key] = record
             else:
                 self.measured[key] = record
 
     def mismatches(self, key):
-        return count_mismatches(self.corrupt[key])
+        return undercounts(self.corrupt[key])
 
 
 def load_windows(path, dry_run, shape, counterpart):
@@ -179,20 +191,20 @@ def result_fields(record):
 def recovery_lines(planned, corrupt, path, command):
     """What to do about windows the analytics never fully accounted for.
 
-    Named one by one with their per-model counts, because a window whose billed
-    count disagrees with what it sent is not a measurement and the operator has to
-    buy it again. Re-running the same command measures exactly these windows: they
-    are not in the measured set, and the record a re-measurement appends supersedes
-    the corrupt one under the same key.
+    Named one by one with the reason they were refused, because such a window is
+    not a measurement and the operator has to buy it again. Re-running the same
+    command measures exactly these windows: they are not in the measured set, and
+    the record a re-measurement appends supersedes the corrupt one under the same
+    key.
     """
     if not corrupt:
         return []
     labels = {plan["key"]: plan["label"] for plan in planned}
     lines = [
         f"{len(corrupt)} window{'s' if len(corrupt) != 1 else ''} in {path.name} "
-        f"{'were' if len(corrupt) != 1 else 'was'} read while the analytics were "
-        f"incomplete or carried another window's traffic. They are not measurements "
-        f"and nothing is scored from them:"
+        f"{'were' if len(corrupt) != 1 else 'was'} read while the bill was still "
+        f"arriving, or carried more traffic than the platform's own excess accounts "
+        f"for. They are not measurements and nothing is scored from them:"
     ]
     for index, plan in enumerate(planned, 1):
         record = corrupt.get(plan["key"])
@@ -200,7 +212,7 @@ def recovery_lines(planned, corrupt, path, command):
             continue
         lines.append(f"  window {index} of {len(planned)}: {labels[plan['key']]}, "
                      f"measured {record.get('measured_at', 'at an unrecorded time')}, "
-                     f"{describe_mismatches(count_mismatches(record)) or 'never settled'}")
+                     f"{refusal(record) or 'never settled'}")
     lines.append(f"  re-measure them with: {command}")
     lines.append(f"  that re-measures exactly these {len(corrupt)} window"
                  f"{'s' if len(corrupt) != 1 else ''} and supersedes the corrupt records; "
