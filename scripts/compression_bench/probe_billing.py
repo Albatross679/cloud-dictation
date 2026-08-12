@@ -18,7 +18,14 @@ totalNeurons is recorded alongside it as a cross-check.
 The settle lag is measured, not assumed: each window is polled at minute
 granularity until consecutive reads agree, and the observed lag is reported.
 
-Writes runs/compression-bench/probes/billing.json.
+Each window is checkpointed to billing.windows.jsonl the moment it closes and
+settles, so the probe can be run in short idle stretches: a re-run skips the
+windows already recorded and measures only what is left. A window interrupted
+mid-flight is never checkpointed, and is discarded and re-measured whole.
+--max-windows measures a bounded number of windows and then stops cleanly.
+
+Writes runs/compression-bench/probes/billing.json, and only once every window
+exists.
 
 --dry-run exercises the batch loop, the window arithmetic, the GraphQL payload,
 the settle loop and the whole comparison against synthesised numbers, and opens
@@ -34,6 +41,7 @@ import requests
 
 import config as cfg
 import quiet_window as quiet
+import window_log
 
 TOLERANCE = 0.02
 
@@ -279,6 +287,9 @@ def main():
                         help="clips per window")
     parser.add_argument("--replicates", type=int, default=cfg.BILLING_PROBE_REPLICATES)
     parser.add_argument("--out", default=None, help="override the result path")
+    parser.add_argument("--max-windows", type=int, default=None,
+                        help="measure at most this many windows, then stop cleanly and "
+                             "leave the rest for a later run")
     parser.add_argument("--window-offset", type=int, default=0,
                         help="how many quiet windows run before this probe, for the announcements")
     parser.add_argument("--window-total", type=int, default=None,
@@ -290,6 +301,8 @@ def main():
         raise SystemExit(f"unknown models: {', '.join(unknown)}")
     if cfg.BASELINE_SPEED not in args.speeds:
         raise SystemExit(f"--speeds must include the {cfg.BASELINE_SPEED:g}x baseline to compare against")
+    if args.max_windows is not None and args.max_windows < 1:
+        raise SystemExit("--max-windows must be at least 1")
     if not cfg.VARIANTS.exists():
         raise SystemExit(f"missing {cfg.VARIANTS}; run compress.py first")
 
@@ -318,11 +331,30 @@ def main():
           f"filters on the four speech models and requestSource {cfg.REQUEST_SOURCE!r}, "
           f"so unrelated AI traffic is already excluded")
 
+    out_path = cfg.RUN_DIR / args.out if args.out else cfg.BILLING_PROBE_RESULT
+    checkpoint = cfg.probe_windows_path(out_path, args.dry_run)
+    shape = window_log.billing_shape(args.clips, args.models)
+    measured = window_log.load_windows(
+        checkpoint, args.dry_run, shape, cfg.probe_windows_path(out_path, not args.dry_run))
+    # Same order as quiet.billing_windows, so a plan index is a window index.
+    planned = [
+        {"key": window_log.billing_key(replicate, speed),
+         "label": f"replicate {replicate} of {args.replicates}, {speed:g}x",
+         "replicate": replicate, "speed": speed}
+        for replicate in range(1, args.replicates + 1)
+        for speed in args.speeds
+    ]
+
     schedule = quiet.QuietSchedule(
         quiet.billing_windows(args.speeds, args.replicates, args.clips, args.models, pool),
         offset=args.window_offset,
         total=args.window_total,
+        completed={i for i, plan in enumerate(planned) if plan["key"] in measured},
     )
+    for record in measured.values():
+        schedule.observe(record.get("settle_seconds_observed"))
+    for line in window_log.resume_lines(planned, measured, checkpoint, args.max_windows):
+        print(f"  {line}")
     for line in schedule.plan_lines():
         print(f"  {line}")
 
@@ -335,42 +367,71 @@ def main():
         print("  dry run: the analytics request is built and never sent")
         print("  " + json.dumps(redacted_payload(args.models)))
 
-    replicates = []
-    window_index = 0
-    for index in range(1, args.replicates + 1):
-        windows = []
-        for speed in args.speeds:
-            print(f"\nreplicate {index} / {args.replicates}, {speed:g}x")
-            schedule.open(window_index)
-            variants = batches[speed]
-            start = floor_minute(datetime.now(timezone.utc))
-            worker = run_batch(session, variants, args.models, base_url, token, args.dry_run)
-            end = floor_minute(datetime.now(timezone.utc)) + timedelta(minutes=1)
-            print(f"  window {iso(start)} to {iso(end)}")
-            wait_for_boundary(end, args.dry_run)
+    measured_now = 0
+    for window_index, plan in enumerate(planned):
+        if plan["key"] in measured:
+            continue
+        if args.max_windows is not None and measured_now >= args.max_windows:
+            print(f"\nstopping after {measured_now} window"
+                  f"{'s' if measured_now != 1 else ''}, as --max-windows asked")
+            break
+        speed = plan["speed"]
+        print(f"\nreplicate {plan['replicate']} / {args.replicates}, {speed:g}x")
+        schedule.open(window_index)
+        variants = batches[speed]
+        start = floor_minute(datetime.now(timezone.utc))
+        worker = run_batch(session, variants, args.models, base_url, token, args.dry_run)
+        end = floor_minute(datetime.now(timezone.utc)) + timedelta(minutes=1)
+        print(f"  window {iso(start)} to {iso(end)}")
+        wait_for_boundary(end, args.dry_run)
 
-            billed, lag, polls = settled_window(
-                session, start, end, args.models,
-                fake=fake_window(worker) if args.dry_run else None,
-            )
-            schedule.observe(lag)
-            schedule.close(window_index, settle_seconds=lag)
-            window_index += 1
-            rows = compare(billed, worker)
-            windows.append({
-                "speed": speed,
-                "clips": len(variants),
-                "window_start": iso(start),
-                "window_end": iso(end),
-                "settle_seconds_observed": lag,
-                "analytics_reads": polls,
-                "models": rows,
-            })
-            for row in rows:
-                ratio = "n/a" if row["audio_seconds_ratio"] is None else f"{row['audio_seconds_ratio']:.4f}"
-                print(f"  {row['model']:<17} billed {row['audio_seconds_billed']:>9.1f} s  "
-                      f"sent {row['audio_seconds_sent']:>9.1f} s  ratio {ratio}")
-        replicates.append({"replicate": index, "windows": windows})
+        billed, lag, polls = settled_window(
+            session, start, end, args.models,
+            fake=fake_window(worker) if args.dry_run else None,
+        )
+        rows = compare(billed, worker)
+        # The window is complete only here, past the send and the settle, so this
+        # is the first point at which anything about it may be written down.
+        record = {
+            "probe": "billing",
+            "synthetic": args.dry_run,
+            "window_key": plan["key"],
+            "window_shape": shape,
+            "replicate": plan["replicate"],
+            "speed": speed,
+            "clips": len(variants),
+            "measured_at": window_log.now_iso(),
+            "window_start": iso(start),
+            "window_end": iso(end),
+            "settle_seconds_observed": lag,
+            "analytics_reads": polls,
+            "models": rows,
+        }
+        window_log.append_window(checkpoint, record)
+        measured[plan["key"]] = record
+        measured_now += 1
+        schedule.observe(lag)
+        schedule.mark_done(window_index)
+        schedule.close(window_index, settle_seconds=lag)
+        for row in rows:
+            ratio = "n/a" if row["audio_seconds_ratio"] is None else f"{row['audio_seconds_ratio']:.4f}"
+            print(f"  {row['model']:<17} billed {row['audio_seconds_billed']:>9.1f} s  "
+                  f"sent {row['audio_seconds_sent']:>9.1f} s  ratio {ratio}")
+        print(f"  checkpointed window {window_index + 1} of {len(planned)} to {checkpoint.name}")
+
+    if any(plan["key"] not in measured for plan in planned):
+        print("\n" + window_log.progress_line(planned, measured, "P1 billing probe"))
+        return 0
+
+    # Every window exists, so the replicates can be rebuilt in plan order. Pairing
+    # is by key, not by the order the windows were measured in, so P1 compares the
+    # 1x and 3x windows of the same replicate however the run was split up.
+    replicates = [
+        {"replicate": replicate,
+         "windows": [window_log.result_fields(measured[window_log.billing_key(replicate, speed)])
+                     for speed in args.speeds]}
+        for replicate in range(1, args.replicates + 1)
+    ]
 
     baseline = cfg.BASELINE_SPEED
     per_model = {}
@@ -413,7 +474,8 @@ def main():
 
     settle_observed = [w["settle_seconds_observed"] for rep in replicates for w in rep["windows"]
                        if w["settle_seconds_observed"] is not None]
-    out_path = cfg.RUN_DIR / args.out if args.out else cfg.BILLING_PROBE_RESULT
+    span = window_log.measurement_span(w.get("measured_at") for rep in replicates
+                                       for w in rep["windows"])
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps({
         "probe": "P1 billed duration under compression",
@@ -423,6 +485,7 @@ def main():
         "audio_minutes_per_replicate": total_minutes,
         "request_source_filter": cfg.REQUEST_SOURCE,
         "tolerance": TOLERANCE,
+        "measurement_span": span,
         "settle_seconds_observed": {
             "mean": sum(settle_observed) / len(settle_observed) if settle_observed else None,
             "max": max(settle_observed) if settle_observed else None,
@@ -435,9 +498,16 @@ def main():
     if settle_observed:
         print(f"observed settle lag: mean {sum(settle_observed) / len(settle_observed):.0f} s, "
               f"max {max(settle_observed):.0f} s")
+    if span:
+        print(f"windows measured between {span['first']} and {span['last']}, "
+              f"spanning {span['days']:.2f} days")
+        if span["days"] >= 1:
+            print("that gap is a possible source of drift: the account's billing behaviour "
+                  "may not have been the same across it")
     if args.dry_run:
         print("synthetic: the billed side was generated from the durations that were sent, so "
               "agreement here proves the arithmetic runs, not that billing is proportional")
+    return 0
 
 
 if __name__ == "__main__":

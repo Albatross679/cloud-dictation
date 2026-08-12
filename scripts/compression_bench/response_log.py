@@ -34,12 +34,14 @@ def count_modes(records):
     return synthetic, len(records) - synthetic
 
 
-def verify_responses(path, dry_run, records=None):
-    """Return the log's records, or raise SystemExit if any belongs to the other mode."""
-    if records is None:
-        if not path.exists():
-            return []
-        records = read_records(path)
+def verify_mode(path, dry_run, records, mine_path, theirs_path):
+    """Return the records, or raise SystemExit if any belongs to the other mode.
+
+    `mine_path` and `theirs_path` are the two files this kind of log is split
+    across, named in the message so the fix is the file name itself. Every
+    append-only log the harness resumes from goes through here, so the two modes
+    are kept apart the same way wherever they are written.
+    """
     synthetic, real = count_modes(records)
     mine, theirs = (synthetic, real) if dry_run else (real, synthetic)
     if not theirs:
@@ -55,10 +57,20 @@ def verify_responses(path, dry_run, records=None):
         )
     raise SystemExit(
         f"{path} holds {theirs} records from a {that_mode}, and this is a {this_mode}. "
-        f"Each mode owns its own log: {cfg.responses_path(dry_run).name} for a {this_mode}, "
-        f"{cfg.responses_path(not dry_run).name} for a {that_mode}. If this log predates the "
-        f"split, rename it to {cfg.responses_path(not dry_run)} and re-run this command."
+        f"Each mode owns its own log: {mine_path.name} for a {this_mode}, "
+        f"{theirs_path.name} for a {that_mode}. If this log predates the "
+        f"split, rename it to {theirs_path} and re-run this command."
     )
+
+
+def verify_responses(path, dry_run, records=None):
+    """Return the log's records, or raise SystemExit if any belongs to the other mode."""
+    if records is None:
+        if not path.exists():
+            return []
+        records = read_records(path)
+    return verify_mode(path, dry_run, records,
+                       cfg.responses_path(dry_run), cfg.responses_path(not dry_run))
 
 
 def verify_results(path, dry_run, results):

@@ -10,7 +10,14 @@ The answer is the slope of billed seconds against padding seconds. A slope near
 metered, which is what Nova-3 is known to do and what the Whisper family has
 never been checked for.
 
-Writes runs/compression-bench/probes/silence.json.
+Each padding's window is checkpointed to silence.windows.jsonl the moment it
+closes and settles, so the probe can be run in short idle stretches: a re-run
+skips the paddings already recorded and measures only what is left. A window
+interrupted mid-flight is never checkpointed, and is discarded and re-measured
+whole. --max-windows measures a bounded number of windows and then stops cleanly.
+
+Writes runs/compression-bench/probes/silence.json, and only once every padding
+has a window.
 
 Building and verifying the padded clips is local ffmpeg work and always runs.
 --dry-run stops before the network and synthesises the billing side.
@@ -27,6 +34,7 @@ import requests
 
 import config as cfg
 import quiet_window as quiet
+import window_log
 from probe_billing import floor_minute, iso, settled_window, wait_for_boundary
 
 DURATION_TOLERANCE_S = 0.06
@@ -161,6 +169,9 @@ def main():
     parser.add_argument("--speech", type=float, default=cfg.SILENCE_PROBE_SPEECH_S,
                         help="seconds of speech held fixed across every padding")
     parser.add_argument("--out", default=None, help="override the result path")
+    parser.add_argument("--max-windows", type=int, default=None,
+                        help="measure at most this many windows, then stop cleanly and "
+                             "leave the rest for a later run")
     parser.add_argument("--window-offset", type=int, default=0,
                         help="how many quiet windows run before this probe, for the announcements")
     parser.add_argument("--window-total", type=int, default=None,
@@ -170,6 +181,8 @@ def main():
     unknown = [m for m in args.models if m not in cfg.MODELS]
     if unknown:
         raise SystemExit(f"unknown models: {', '.join(unknown)}")
+    if args.max_windows is not None and args.max_windows < 1:
+        raise SystemExit("--max-windows must be at least 1")
     for tool in ("ffmpeg", "ffprobe"):
         if not shutil.which(tool):
             sys.exit(f"{tool} not found on PATH")
@@ -208,11 +221,30 @@ def main():
     print(f"  {audio_minutes:.1f} audio minutes per model, ~${cost:.2f} total, "
           f"one settled analytics window per padding")
 
+    out_path = cfg.RUN_DIR / args.out if args.out else cfg.SILENCE_PROBE_RESULT
+    checkpoint = cfg.probe_windows_path(out_path, args.dry_run)
+    # The shape is keyed on the speech length asked for, which the runner also
+    # knows, rather than the measured length, which drifts by milliseconds
+    # between ffmpeg runs. build_speech already holds the two within tolerance.
+    shape = window_log.silence_shape(args.repeats, args.models, args.speech)
+    measured = window_log.load_windows(
+        checkpoint, args.dry_run, shape, cfg.probe_windows_path(out_path, not args.dry_run))
+    planned = [
+        {"key": window_log.silence_key(clip["padding_s"]),
+         "label": f"{clip['padding_s']:g} s padding"}
+        for clip in clips
+    ]
+
     schedule = quiet.QuietSchedule(
         quiet.silence_windows(args.padding, args.repeats, args.models, speech_s),
         offset=args.window_offset,
         total=args.window_total,
+        completed={i for i, plan in enumerate(planned) if plan["key"] in measured},
     )
+    for record in measured.values():
+        schedule.observe(record.get("settle_seconds_observed"))
+    for line in window_log.resume_lines(planned, measured, checkpoint, args.max_windows):
+        print(f"  {line}")
     for line in schedule.plan_lines():
         print(f"  {line}")
 
@@ -222,8 +254,15 @@ def main():
         token = cfg.auth_token()
         session = requests.Session()
 
-    windows = []
+    measured_now = 0
     for window_index, clip in enumerate(clips):
+        plan = planned[window_index]
+        if plan["key"] in measured:
+            continue
+        if args.max_windows is not None and measured_now >= args.max_windows:
+            print(f"\nstopping after {measured_now} window"
+                  f"{'s' if measured_now != 1 else ''}, as --max-windows asked")
+            break
         print(f"\npadding {clip['padding_s']:g}s")
         schedule.open(window_index)
         start = floor_minute(datetime.now(timezone.utc))
@@ -251,9 +290,6 @@ def main():
             fake=(fake_window(args.models, args.repeats, speech_s, clip["duration_s"])
                   if args.dry_run else None),
         )
-        schedule.observe(lag)
-        schedule.close(window_index, settle_seconds=lag)
-
         rows = []
         for model_key in args.models:
             b = billed.get(model_key, {"requests": 0, "neurons": 0.0, "audio_seconds": 0.0})
@@ -269,15 +305,37 @@ def main():
             })
             print(f"  {model_key:<17} billed {rows[-1]['billed_seconds_per_request']:7.2f} s/req  "
                   f"file {clip['duration_s']:.2f} s  speech {speech_s:.2f} s")
-        windows.append({
+        # The window is complete only here, past the send and the settle, so this
+        # is the first point at which anything about it may be written down.
+        record = {
+            "probe": "silence",
+            "synthetic": args.dry_run,
+            "window_key": plan["key"],
+            "window_shape": shape,
             "padding_s": clip["padding_s"],
             "file_seconds": clip["duration_s"],
+            "measured_at": window_log.now_iso(),
             "window_start": iso(start),
             "window_end": iso(end),
             "settle_seconds_observed": lag,
             "analytics_reads": polls,
             "models": rows,
-        })
+        }
+        window_log.append_window(checkpoint, record)
+        measured[plan["key"]] = record
+        measured_now += 1
+        schedule.observe(lag)
+        schedule.mark_done(window_index)
+        schedule.close(window_index, settle_seconds=lag)
+        print(f"  checkpointed window {window_index + 1} of {len(planned)} to {checkpoint.name}")
+
+    if any(plan["key"] not in measured for plan in planned):
+        print("\n" + window_log.progress_line(planned, measured, "P2 silence probe"))
+        return 0
+
+    # Every padding has a window, so the slope is fitted over the full set, in
+    # padding order rather than the order the windows happened to be measured in.
+    windows = [window_log.result_fields(measured[plan["key"]]) for plan in planned]
 
     summary = {}
     for model_key in args.models:
@@ -296,7 +354,7 @@ def main():
         }
         print(f"{model_key:<17} slope {s if s is None else round(s, 3)}  {verdict(s)}")
 
-    out_path = cfg.RUN_DIR / args.out if args.out else cfg.SILENCE_PROBE_RESULT
+    span = window_log.measurement_span(w.get("measured_at") for w in windows)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps({
         "probe": "P2 silence padding",
@@ -304,14 +362,22 @@ def main():
         "speech_seconds": speech_s,
         "speech_sources": sources,
         "repeats": args.repeats,
+        "measurement_span": span,
         "settle_seconds_observed": [w["settle_seconds_observed"] for w in windows],
         "windows": windows,
         "summary": summary,
     }, indent=2))
     print(f"\nwrote {out_path}")
+    if span:
+        print(f"windows measured between {span['first']} and {span['last']}, "
+              f"spanning {span['days']:.2f} days")
+        if span["days"] >= 1:
+            print("that gap is a possible source of drift: the account's billing behaviour "
+                  "may not have been the same across it")
     if args.dry_run:
         print("synthetic: the billing side assumes Nova-3 meters speech and Whisper meters files, "
               "which is the hypothesis this probe exists to test")
+    return 0
 
 
 if __name__ == "__main__":

@@ -210,6 +210,12 @@ def model_key_for_id(analytics_id: str) -> str:
     return catalogue().key_for_model_id(analytics_id)
 
 
+def probe_windows_path(result_path: Path, dry_run: bool) -> Path:
+    """Per-window checkpoint log beside a probe's result, one file per mode."""
+    infix = ".dry-run" if dry_run else ""
+    return result_path.with_name(f"{result_path.stem}.windows{infix}.jsonl")
+
+
 def usd_per_hour(model_key: str, speed: float) -> float:
     """Cost of one hour of real speech at a compression factor."""
     return usd_per_audio_minute(model_key) / speed * 60

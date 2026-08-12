@@ -32,10 +32,10 @@ Every stage except the live paths runs offline and free. The boundary is explici
 
 The two modes also write different files. Stages 3, 4 and 5 each take `--dry-run` or `--live`, and each mode owns its own resume log, results file and report:
 
-| Mode | Stage 3 writes | Stage 4 writes | Stage 5 writes |
-| --- | --- | --- | --- |
-| `--live` | `responses.jsonl` | `results.json` | `report.html` |
-| `--dry-run` | `responses.dry-run.jsonl` | `results.dry-run.json` | `report.dry-run.html` |
+| Mode | Stage 3 writes | Stage 4 writes | Stage 5 writes | Each probe checkpoints to |
+| --- | --- | --- | --- | --- |
+| `--live` | `responses.jsonl` | `results.json` | `report.html` | `probes/<probe>.windows.jsonl` |
+| `--dry-run` | `responses.dry-run.jsonl` | `results.dry-run.json` | `report.dry-run.html` | `probes/<probe>.windows.dry-run.jsonl` |
 
 Separate files are what makes the bad state impossible rather than merely detectable: a live run cannot resume over a dry run's cells, and no results file can be a blend of measured and invented responses. On top of that, every stage checks the `synthetic` flag on the records it opens against its own mode, so a log that was copied, renamed, or left over from before the split stops the run with a message naming the file and the fix.
 
@@ -51,6 +51,12 @@ The phase order is the point: the main grid, scoring and the report run first, b
 
 `--grid-only` runs the grid, scoring and the report, with no quiet windows at all. `--probes-only` runs the two probes on their own, for doing them later or overnight.
 
+`--max-windows N` measures at most N more probe windows and then stops cleanly, which is how the probes are run in short idle stretches instead of one long sitting:
+
+    run_all.py --live --probes-only --max-windows 2
+
+The budget is spent in running order: P1 takes what it needs first, P2 gets what is left, and a probe with windows left but no budget is reported as left for a later run rather than started. Every window measured is checkpointed, so the next invocation of the same command picks up where this one stopped. The plan is sized from the windows that actually remain, and quotes both the quiet this run costs and the quiet still left to finish every probe.
+
 ## When you must not dictate
 
 Only inside a probe's measurement windows, and the run tells you when each one starts and ends.
@@ -58,6 +64,8 @@ Only inside a probe's measurement windows, and the run tells you when each one s
 `run.py`, the main grid, records cost and duration from each response individually. No other traffic on the account can affect it, so dictate freely for the whole of that stage. The probes are different: they read account-level analytics filtered to the four speech models and the Workers-binding request source, which is the exact path the dictation app's own requests take. Anything dictated inside a measurement window is counted into that window and silently corrupts it.
 
 Today's configuration opens 11 measurement windows: 3 replicates at 2 speeds for P1, and 5 paddings for P2. Each window costs its send time plus a settle that polls once a minute until two consecutive reads agree, capped at 30 minutes. That puts the quiet total between about 1 h 20 min and about 6 h 50 min. The runner prints the range, and each window's own share, before you commit to anything; once real settle times have been measured the estimate for the windows still to come is recomputed from them instead of the assumed bracket.
+
+You do not have to sit through that in one block. Windows are checkpointed as they complete, so the 11 are split across as many sittings as you like, and the estimate counts only the windows still to run.
 
 Each window is announced by a full-width block that says `DO NOT DICTATE` and which window this is out of how many. When the window has closed and settled, an equally distinct block says `SAFE TO DICTATE`. During the hold and the settle a line keeps counting down, so a poll that only fires once a minute never looks like a frozen run.
 
@@ -93,6 +101,19 @@ Each mode's response log is its resume log. `run.py` reads the log its mode owns
 A run only ever resumes over its own kind of response. A live run that finds synthetic records, or a dry run that finds real ones, prints what the file holds and what to rename it to, and exits without running a cell. A log holding both kinds cannot be resumed or scored by either mode and has to be moved aside.
 
 A `responses.jsonl` written before the split holds a dry run's records. Rename it to `responses.dry-run.jsonl`, along with `results.json` and `report.html` to their `dry-run` names, and both modes work from there.
+
+### The probes resume per measurement window
+
+A probe's unit of resume is one measurement window: a batch sent, a settle waited out, an analytics delta read. Each probe appends the whole of a window's result to its own checkpoint log the moment that window closes and settles, before the next one opens. Interrupt a probe at any point and re-run the identical command: it names the windows it is skipping and the ones it still has to measure, and measures only those. A kill loses at most the window in flight, never a completed one.
+
+- **A window in flight is discarded, not resumed.** Its measurement depends on an uninterrupted send followed by a clean settle, so half of one is not salvageable. Nothing is written until the settle returns, and a line torn by a kill mid-write fails to decode and is dropped on the next read. Either way that window is re-measured whole, and both the code and the output say so.
+- **The analysis runs only when every window exists.** A probe that is short of windows reports `4 of 6 windows measured, 2 remaining` and stops without writing a result. No number is ever computed from partial data.
+- **Pairing is by key, not by order.** P1 keys a window on its replicate and its speed together, so the 1x against 3x comparison inside a replicate is always between that replicate's own two windows, however the run was split up or in whatever order the windows were measured. P2 keys on the padding.
+- **Each window records when it was measured.** The result file carries `measured_at` per window and a `measurement_span` over all of them, so a run split across days shows the gap, which is a possible source of drift.
+- **A checkpoint from one mode never satisfies the other.** Each mode owns its own checkpoint file, and every record is checked against the mode before anything is skipped, the same guard the grid's response log uses.
+- **A checkpoint from a differently shaped batch is refused.** Each record carries the clip count, the models and the speech length its window sent. Change those and the run stops rather than comparing windows that measured different things.
+
+`--max-windows N` on either probe measures at most N more windows and then stops cleanly, leaving the rest for a later run.
 
 ## The probes
 
@@ -140,10 +161,10 @@ The probes are separately authorised and separately paid:
     ../../runs/compression-bench/.venv/bin/python probe_billing.py --live
     ../../runs/compression-bench/.venv/bin/python probe_silence.py --live
 
-`run.py --live` states where its rates came from, then prints the request count, the billed minutes and the estimated cost before the first request. A probe run on its own numbers its own windows; `run_all.py` passes `--window-offset` and `--window-total` so the announcements count across both probes instead of restarting.
+`run.py --live` states where its rates came from, then prints the request count, the billed minutes and the estimated cost before the first request. A probe run on its own numbers its own windows; `run_all.py` passes `--window-offset` and `--window-total` so the announcements count across both probes instead of restarting, and `--max-windows` when the run is bounded.
 
 ## Tests
 
-The mode split and the resume log are covered by `test_response_log.py`. The quiet-window banners, the quiet-time estimate, the stage selection and the typed confirmation are covered by `test_run_plan.py`. The model catalogue and the cost arithmetic built on it are covered by `test_catalogue.py`. The report's two halves are covered by `test_report.py`: that every cost figure is the catalogue's own arithmetic, and that no accuracy section renders a number, a chart or a figure label without a results file behind it. All four use the standard library's `unittest`, open no socket, and need no dependency beyond `requirements.txt`. From `scripts/compression_bench/`:
+The mode split and the grid's resume log are covered by `test_response_log.py`. The quiet-window banners, the quiet-time estimate, the stage selection and the typed confirmation are covered by `test_run_plan.py`. The probes' per-window checkpoints, their resume, the window budget and the runner's shrinking plan are covered by `test_window_log.py`. The model catalogue and the cost arithmetic built on it are covered by `test_catalogue.py`. The report's two halves are covered by `test_report.py`: that every cost figure is the catalogue's own arithmetic, and that no accuracy section renders a number, a chart or a figure label without a results file behind it. All five use the standard library's `unittest`, open no socket, and need no dependency beyond `requirements.txt`. From `scripts/compression_bench/`:
 
-    ../../runs/compression-bench/.venv/bin/python -m unittest test_response_log test_run_plan test_catalogue test_report -v
+    ../../runs/compression-bench/.venv/bin/python -m unittest test_response_log test_run_plan test_window_log test_catalogue test_report -v
