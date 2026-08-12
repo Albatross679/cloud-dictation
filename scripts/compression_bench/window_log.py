@@ -21,6 +21,14 @@ Each record also carries the shape of the batch it measured and the time it was
 measured at. A checkpoint whose shape disagrees with the run reading it stops the
 run, because windows measured from different batches are not comparable. The
 timestamps are reported and stored, so a run split across days shows the gap.
+
+A checkpoint only counts as a measurement when every model's billed request count
+equals what that window sent. Analytics that were still arriving, or that carried
+a neighbouring window's traffic, produce a record whose counts disagree, and every
+ratio computed from such a window is meaningless. Those records are held back from
+the measured set by load_windows, so the probe treats the window as still to
+measure and no result is written from it. The check reads the counts in the record
+itself, so a window written before this check existed is classified the same way.
 """
 
 import json
@@ -74,17 +82,73 @@ def silence_shape(repeats, models, speech_seconds):
             "speech_seconds": round(float(speech_seconds), 3)}
 
 
+def count_mismatches(record):
+    """Model rows of a record whose billed request count differs from what was sent.
+
+    An empty list means the analytics accounted for exactly the traffic the window
+    sent, which is the condition under which the window's audio-seconds ratio means
+    anything.
+    """
+    mismatches = []
+    for row in record.get("models") or ():
+        sent = row.get("requests_sent")
+        billed = row.get("requests_billed")
+        if sent is None or billed is None:
+            continue
+        if billed != sent:
+            mismatches.append({
+                "model": row.get("model"),
+                "requests_sent": sent,
+                "requests_billed": billed,
+                "delta": billed - sent,
+            })
+    return mismatches
+
+
+def describe_mismatches(mismatches):
+    """Per-model shortfall or excess, as one line the operator can read."""
+    return ", ".join(
+        f"{m['model']} sent {m['requests_sent']} billed {m['requests_billed']} "
+        f"({m['delta']:+d})"
+        for m in mismatches
+    )
+
+
+class WindowLog:
+    """A probe's checkpoints, split into the windows that count and the ones that do not.
+
+    `measured` holds the windows whose billed counts equal what they sent, keyed by
+    window key. `corrupt` holds the rest: windows the analytics never fully
+    accounted for. A key appearing more than once keeps its last record, so
+    re-measuring a corrupt window supersedes it.
+    """
+
+    def __init__(self, records=()):
+        latest = {}
+        for record in records:
+            latest[record["window_key"]] = record
+        self.measured = {}
+        self.corrupt = {}
+        for key, record in latest.items():
+            if record.get("settled") is False or count_mismatches(record):
+                self.corrupt[key] = record
+            else:
+                self.measured[key] = record
+
+    def mismatches(self, key):
+        return count_mismatches(self.corrupt[key])
+
+
 def load_windows(path, dry_run, shape, counterpart):
-    """Windows already measured in this mode, keyed by window key.
+    """This mode's checkpoints, classified into measured and corrupt windows.
 
     Raises SystemExit when a record belongs to the other mode, or when it was
     measured from a differently shaped batch.
     """
     if not path.exists():
-        return {}
+        return WindowLog()
     records = response_log.read_records(path)
     response_log.verify_mode(path, dry_run, records, path, counterpart)
-    measured = {}
     for record in records:
         recorded = record.get("window_shape")
         if recorded != shape:
@@ -95,8 +159,7 @@ def load_windows(path, dry_run, shape, counterpart):
                 f"cannot be compared with each other. Move this file out of the way to "
                 f"re-measure every window, or re-run with the arguments it was written with."
             )
-        measured[record["window_key"]] = record
-    return measured
+    return WindowLog(records)
 
 
 def append_window(path, record):
@@ -111,6 +174,38 @@ def result_fields(record):
     """A checkpoint record without the bookkeeping the result file does not carry."""
     return {key: value for key, value in record.items()
             if key not in ("probe", "synthetic", "window_key", "window_shape")}
+
+
+def recovery_lines(planned, corrupt, path, command):
+    """What to do about windows the analytics never fully accounted for.
+
+    Named one by one with their per-model counts, because a window whose billed
+    count disagrees with what it sent is not a measurement and the operator has to
+    buy it again. Re-running the same command measures exactly these windows: they
+    are not in the measured set, and the record a re-measurement appends supersedes
+    the corrupt one under the same key.
+    """
+    if not corrupt:
+        return []
+    labels = {plan["key"]: plan["label"] for plan in planned}
+    lines = [
+        f"{len(corrupt)} window{'s' if len(corrupt) != 1 else ''} in {path.name} "
+        f"{'were' if len(corrupt) != 1 else 'was'} read while the analytics were "
+        f"incomplete or carried another window's traffic. They are not measurements "
+        f"and nothing is scored from them:"
+    ]
+    for index, plan in enumerate(planned, 1):
+        record = corrupt.get(plan["key"])
+        if not record:
+            continue
+        lines.append(f"  window {index} of {len(planned)}: {labels[plan['key']]}, "
+                     f"measured {record.get('measured_at', 'at an unrecorded time')}, "
+                     f"{describe_mismatches(count_mismatches(record)) or 'never settled'}")
+    lines.append(f"  re-measure them with: {command}")
+    lines.append(f"  that re-measures exactly these {len(corrupt)} window"
+                 f"{'s' if len(corrupt) != 1 else ''} and supersedes the corrupt records; "
+                 f"every window whose counts did match is still skipped")
+    return lines
 
 
 def resume_lines(planned, measured, path, budget=None):

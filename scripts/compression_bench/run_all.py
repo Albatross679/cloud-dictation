@@ -216,12 +216,16 @@ def mode_flag(dry_run):
 
 def completed_windows(result_path, dry_run, shape, keys):
     """Indices of a probe's windows that its checkpoint log already holds, and
-    the settle times measured for them."""
-    measured = window_log.load_windows(
+    the settle times measured for them.
+
+    A window whose billed counts never matched what it sent is not one of them: it
+    is still to measure, so the plan sizes it and its quiet time back in.
+    """
+    log = window_log.load_windows(
         cfg.probe_windows_path(result_path, dry_run), dry_run, shape,
         cfg.probe_windows_path(result_path, not dry_run))
-    indices = {i for i, key in enumerate(keys) if key in measured}
-    settles = [r.get("settle_seconds_observed") for r in measured.values()]
+    indices = {i for i, key in enumerate(keys) if key in log.measured}
+    settles = [r.get("settle_seconds_observed") for r in log.measured.values()]
     return indices, settles
 
 
@@ -306,9 +310,12 @@ def print_plan(stages, schedules, dry_run, quiet_stages):
             print(f"  {measured} window{'s' if measured != 1 else ''} already measured and "
                   f"checkpointed, and no longer costing quiet time")
         print(f"  {schedules[0].basis()}")
+        print(f"  consecutive windows are held "
+              f"{quiet.format_duration(quiet.boundary_hold_seconds(schedules[0].observed_settles))} "
+              f"apart, so one window's analytics lag cannot land inside the next window's range")
         print("  the stages before the probes need no quiet at all")
         for schedule in schedules:
-            for line in schedule.plan_lines()[3:]:
+            for line in schedule.plan_lines()[quiet.QuietSchedule.HEADER_LINES:]:
                 print(f"  {line}")
     else:
         print("time you must not dictate: none, no probe stage is selected")

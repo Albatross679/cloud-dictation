@@ -10,6 +10,12 @@ The answer is the slope of billed seconds against padding seconds. A slope near
 metered, which is what Nova-3 is known to do and what the Whisper family has
 never been checked for.
 
+This probe reads the same analytics P1 does and settles the same way: it polls
+until every model's billed request count equals what the padding's window sent,
+confirms that over one further read, and records the window as failed rather than
+as a result when the counts never agree. Consecutive windows are held a real gap
+apart so one window's analytics lag cannot land inside the next window's range.
+
 Each padding's window is checkpointed to silence.windows.jsonl the moment it
 closes and settles, so the probe can be run in short idle stretches: a re-run
 skips the paddings already recorded and measures only what is left. A window
@@ -35,7 +41,8 @@ import requests
 import config as cfg
 import quiet_window as quiet
 import window_log
-from probe_billing import floor_minute, iso, settled_window, wait_for_boundary
+from probe_billing import (floor_minute, hold_boundary_gap, iso, sent_counts, settled_window,
+                           wait_for_boundary)
 
 DURATION_TOLERANCE_S = 0.06
 
@@ -227,8 +234,9 @@ def main():
     # knows, rather than the measured length, which drifts by milliseconds
     # between ffmpeg runs. build_speech already holds the two within tolerance.
     shape = window_log.silence_shape(args.repeats, args.models, args.speech)
-    measured = window_log.load_windows(
+    log = window_log.load_windows(
         checkpoint, args.dry_run, shape, cfg.probe_windows_path(out_path, not args.dry_run))
+    measured = log.measured
     planned = [
         {"key": window_log.silence_key(clip["padding_s"]),
          "label": f"{clip['padding_s']:g} s padding"}
@@ -243,7 +251,12 @@ def main():
     )
     for record in measured.values():
         schedule.observe(record.get("settle_seconds_observed"))
+    hold_seconds = quiet.boundary_hold_seconds(schedule.observed_settles)
     for line in window_log.resume_lines(planned, measured, checkpoint, args.max_windows):
+        print(f"  {line}")
+    for line in window_log.recovery_lines(
+            planned, log.corrupt, checkpoint,
+            f"probe_silence.py {'--dry-run' if args.dry_run else '--live'}"):
         print(f"  {line}")
     for line in schedule.plan_lines():
         print(f"  {line}")
@@ -285,14 +298,14 @@ def main():
         end = floor_minute(datetime.now(timezone.utc)) + timedelta(minutes=1)
         wait_for_boundary(end, args.dry_run)
 
-        billed, lag, polls = settled_window(
-            session, start, end, args.models,
+        settle = settled_window(
+            session, start, end, args.models, sent_counts(worker),
             fake=(fake_window(args.models, args.repeats, speech_s, clip["duration_s"])
                   if args.dry_run else None),
         )
         rows = []
         for model_key in args.models:
-            b = billed.get(model_key, {"requests": 0, "neurons": 0.0, "audio_seconds": 0.0})
+            b = settle.totals.get(model_key, {"requests": 0, "neurons": 0.0, "audio_seconds": 0.0})
             sent = max(1, worker[model_key]["requests"])
             rows.append({
                 "model": model_key,
@@ -317,20 +330,43 @@ def main():
             "measured_at": window_log.now_iso(),
             "window_start": iso(start),
             "window_end": iso(end),
-            "settle_seconds_observed": lag,
-            "analytics_reads": polls,
+            "settled": settle.complete,
+            "settle_seconds_observed": settle.lag_seconds,
+            "settle_seconds_confirmed": settle.confirmed_seconds,
+            "analytics_reads": settle.polls,
             "models": rows,
         }
+        if not settle.complete:
+            record["shortfall"] = settle.missing
         window_log.append_window(checkpoint, record)
-        measured[plan["key"]] = record
+        # A failed window is written down so the operator can see it, and is left out
+        # of the measured set so it is re-measured rather than scored. It cost the
+        # same money as a good one, so it still counts against --max-windows.
         measured_now += 1
-        schedule.observe(lag)
-        schedule.mark_done(window_index)
-        schedule.close(window_index, settle_seconds=lag)
-        print(f"  checkpointed window {window_index + 1} of {len(planned)} to {checkpoint.name}")
+        if settle.complete:
+            measured[plan["key"]] = record
+            schedule.observe(settle.lag_seconds)
+            hold_seconds = quiet.boundary_hold_seconds(schedule.observed_settles)
+            schedule.mark_done(window_index)
+        else:
+            log.corrupt[plan["key"]] = record
+        schedule.close(window_index, settle_seconds=settle.lag_seconds)
+        if settle.complete:
+            print(f"  checkpointed window {window_index + 1} of {len(planned)} to "
+                  f"{checkpoint.name}")
+        else:
+            print(f"  recorded window {window_index + 1} of {len(planned)} as failed in "
+                  f"{checkpoint.name}: {window_log.describe_mismatches(settle.missing)}")
+            print("  it is not a measurement and will be re-measured; no slope is fitted "
+                  "through it")
+        hold_boundary_gap(end, hold_seconds, args.dry_run)
 
     if any(plan["key"] not in measured for plan in planned):
         print("\n" + window_log.progress_line(planned, measured, "P2 silence probe"))
+        for line in window_log.recovery_lines(
+                planned, log.corrupt, checkpoint,
+                f"probe_silence.py {'--dry-run' if args.dry_run else '--live'}"):
+            print(line)
         return 0
 
     # Every padding has a window, so the slope is fitted over the full set, in

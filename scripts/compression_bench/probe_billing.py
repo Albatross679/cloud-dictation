@@ -15,8 +15,17 @@ to the short clips the benchmark actually runs on.
 The measured quantity is totalAudioSeconds, which is the billed quantity itself.
 totalNeurons is recorded alongside it as a cross-check.
 
-The settle lag is measured, not assumed: each window is polled at minute
-granularity until consecutive reads agree, and the observed lag is reported.
+The settle is on completeness: the probe knows how many requests it sent, and
+polls at minute granularity until every model's billed request count equals that,
+then over one further read to confirm. A window that reaches the timeout with the
+counts still disagreeing is recorded as failed with its per-model shortfall and is
+re-measured, because a count below what was sent means this window's traffic had
+not all arrived and a count above it means another window's traffic was counted.
+The lag reported is the observed one: seconds from the window's own end to the
+first read that accounted for every request.
+
+Consecutive windows are separated by a real gap, held from the closing window's
+end, so one window's analytics lag tail cannot land inside the next window's range.
 
 Each window is checkpointed to billing.windows.jsonl the moment it closes and
 settles, so the probe can be run in short idle stretches: a re-run skips the
@@ -117,65 +126,138 @@ def fold_groups(groups):
 def wait_for_boundary(end, dry_run):
     """Hold until a closed window's last minute is over.
 
-    Minute buckets are inclusive of the minute a window ends in, so starting the
-    next batch before that minute passes would count it in both windows.
+    Minute buckets are inclusive of the minute a window ends in, so reading the
+    window back before that minute passes reads a bucket that is still open.
     """
     if dry_run:
         return
     remaining = (end - datetime.now(timezone.utc)).total_seconds()
     if remaining > 0:
-        print(f"  holding {remaining:.0f} s so the next window cannot share this minute")
+        print(f"  holding {remaining:.0f} s for the window's last minute to close")
         quiet.sleep_with_progress(remaining, "holding for the minute boundary")
 
 
-def fingerprint(totals):
-    """Comparable form of one window read, for deciding it has stopped moving."""
-    return json.dumps(totals, sort_keys=True)
+def hold_boundary_gap(end, hold_seconds, dry_run):
+    """Hold after a window is recorded so the next one cannot share its lag tail.
+
+    Analytics for one batch keep arriving for minutes after the batch is sent. The
+    gap is measured from the window's own end, so a window whose settle already ran
+    past the hold waits no longer.
+    """
+    if dry_run:
+        return
+    remaining = hold_seconds - (datetime.now(timezone.utc) - end).total_seconds()
+    if remaining > 0:
+        print(f"  holding {remaining:.0f} s more so the next window cannot share this "
+              f"window's analytics lag")
+        quiet.sleep_with_progress(remaining, "holding the gap before the next window")
 
 
-def settled_window(session, start, end, models, fake=None):
-    """Poll a window until consecutive reads agree, and report how long that took.
+def sent_counts(worker):
+    """Requests per model this window actually sent, from the worker's own tally."""
+    return {model_key: row["requests"] for model_key, row in worker.items()}
 
-    Returns the totals, the seconds between the window closing and the first of
-    the agreeing reads, and how many reads it took.
+
+def billed_counts(totals, models):
+    """Requests per model the analytics account for, over the models asked about."""
+    return {model_key: totals.get(model_key, {}).get("requests", 0) for model_key in models}
+
+
+def complete_read(totals, expected):
+    """True when the analytics account for exactly the requests the window sent.
+
+    This is the invariant the probe can check, and stability cannot substitute for
+    it: analytics stay unchanged for a whole poll interval while data is still
+    arriving, and a read where one model has 3 of its 50 is as stable as a finished
+    one. A count above what was sent is as disqualifying as one below, because it
+    means another window's traffic is in this window's range.
+    """
+    billed = billed_counts(totals, expected)
+    return all(billed[model_key] == expected[model_key] for model_key in expected)
+
+
+def shortfall(totals, expected):
+    """Per-model rows naming what the analytics never accounted for."""
+    billed = billed_counts(totals, expected)
+    return [
+        {"model": model_key, "requests_sent": expected[model_key],
+         "requests_billed": billed[model_key],
+         "delta": billed[model_key] - expected[model_key]}
+        for model_key in sorted(expected)
+        if billed[model_key] != expected[model_key]
+    ]
+
+
+class Settle:
+    """One window's analytics read, and whether it is a measurement at all.
+
+    `complete` is false when the timeout was reached with the counts still
+    disagreeing. `totals` is then the last read, kept only so the disagreement can
+    be reported; nothing may be scored from it.
+
+    `lag_seconds` is what was observed, not inferred: seconds from the window's own
+    end to the first read that accounted for every request. `confirmed_seconds` is
+    the same for the read that confirmed it.
+    """
+
+    def __init__(self, totals, complete, lag_seconds, confirmed_seconds, polls, missing):
+        self.totals = totals
+        self.complete = complete
+        self.lag_seconds = lag_seconds
+        self.confirmed_seconds = confirmed_seconds
+        self.polls = polls
+        self.missing = missing
+
+
+def settled_window(session, start, end, models, expected, fake=None):
+    """Poll a window until every model's billed count equals what it sent.
+
+    Completeness is confirmed over ANALYTICS_SETTLE_COMPLETE_READS consecutive reads, so
+    a count that matches once while data is still moving is not mistaken for the
+    end. Reaching the timeout without completeness returns a Settle with
+    `complete` false and the per-model shortfall in `missing`.
     """
     if fake is not None:
         print("  dry run, not polling for the analytics to settle")
-        return fake, None, 0
+        missing = shortfall(fake, expected)
+        return Settle(fake, not missing, None, None, 0, missing)
 
-    closed = time.monotonic()
-    deadline = closed + cfg.ANALYTICS_SETTLE_TIMEOUT_S
-    previous = None
-    agreements = 0
+    closed = end
+    deadline = time.monotonic() + cfg.ANALYTICS_SETTLE_TIMEOUT_S
+    completions = 0
     polls = 0
-    first_agreeing_lag = None
+    first_complete_lag = None
+    totals = {}
     while True:
         totals = read_window(session, start, end, models)
         polls += 1
-        lag = time.monotonic() - closed
-        current = fingerprint(totals)
-        if previous is not None and current == previous and any(
-            row["requests"] for row in totals.values()
-        ):
-            agreements += 1
-            if first_agreeing_lag is None:
-                first_agreeing_lag = lag - cfg.ANALYTICS_POLL_INTERVAL_S
-            if agreements >= cfg.ANALYTICS_SETTLE_AGREEMENTS - 1:
-                print(f"  settled after {first_agreeing_lag:.0f} s, {polls} reads")
-                return totals, first_agreeing_lag, polls
+        lag = (datetime.now(timezone.utc) - closed).total_seconds()
+        if complete_read(totals, expected):
+            completions += 1
+            if first_complete_lag is None:
+                first_complete_lag = lag
+            if completions >= cfg.ANALYTICS_SETTLE_COMPLETE_READS:
+                print(f"  complete after {first_complete_lag:.0f} s, confirmed at "
+                      f"{lag:.0f} s, {polls} reads: every model billed exactly what "
+                      f"the window sent")
+                return Settle(totals, True, first_complete_lag, lag, polls, [])
         else:
-            agreements = 0
-            first_agreeing_lag = None
-        previous = current
+            completions = 0
+            first_complete_lag = None
+        missing = shortfall(totals, expected)
         if time.monotonic() >= deadline:
-            print(f"  gave up waiting after {cfg.ANALYTICS_SETTLE_TIMEOUT_S} s, "
-                  f"reporting the last read")
-            return totals, None, polls
-        billed = sum(row["requests"] for row in totals.values())
-        print(f"    {lag:.0f} s after the window closed: {billed} requests visible, "
-              f"reads agree {agreements} of {cfg.ANALYTICS_SETTLE_AGREEMENTS - 1} times")
+            print(f"  gave up after {cfg.ANALYTICS_SETTLE_TIMEOUT_S} s with the counts still "
+                  f"disagreeing: {window_log.describe_mismatches(missing)}")
+            print("  this window is recorded as failed, not as a result")
+            return Settle(totals, False, None, None, polls, missing)
+        if missing:
+            print(f"    {lag:.0f} s after the window closed, still short: "
+                  f"{window_log.describe_mismatches(missing)}")
+        else:
+            print(f"    {lag:.0f} s after the window closed: every count matches, "
+                  f"{completions} of {cfg.ANALYTICS_SETTLE_COMPLETE_READS} confirming reads")
         quiet.sleep_with_progress(cfg.ANALYTICS_POLL_INTERVAL_S,
-                                  "still quiet, waiting for the analytics to settle")
+                                  "still quiet, waiting for every request to be billed")
 
 
 def send_clip(session, path, model_key, base_url, token):
@@ -334,8 +416,9 @@ def main():
     out_path = cfg.RUN_DIR / args.out if args.out else cfg.BILLING_PROBE_RESULT
     checkpoint = cfg.probe_windows_path(out_path, args.dry_run)
     shape = window_log.billing_shape(args.clips, args.models)
-    measured = window_log.load_windows(
+    log = window_log.load_windows(
         checkpoint, args.dry_run, shape, cfg.probe_windows_path(out_path, not args.dry_run))
+    measured = log.measured
     # Same order as quiet.billing_windows, so a plan index is a window index.
     planned = [
         {"key": window_log.billing_key(replicate, speed),
@@ -353,7 +436,12 @@ def main():
     )
     for record in measured.values():
         schedule.observe(record.get("settle_seconds_observed"))
+    hold_seconds = quiet.boundary_hold_seconds(schedule.observed_settles)
     for line in window_log.resume_lines(planned, measured, checkpoint, args.max_windows):
+        print(f"  {line}")
+    for line in window_log.recovery_lines(
+            planned, log.corrupt, checkpoint,
+            f"probe_billing.py {'--dry-run' if args.dry_run else '--live'}"):
         print(f"  {line}")
     for line in schedule.plan_lines():
         print(f"  {line}")
@@ -385,11 +473,11 @@ def main():
         print(f"  window {iso(start)} to {iso(end)}")
         wait_for_boundary(end, args.dry_run)
 
-        billed, lag, polls = settled_window(
-            session, start, end, args.models,
+        settle = settled_window(
+            session, start, end, args.models, sent_counts(worker),
             fake=fake_window(worker) if args.dry_run else None,
         )
-        rows = compare(billed, worker)
+        rows = compare(settle.totals, worker)
         # The window is complete only here, past the send and the settle, so this
         # is the first point at which anything about it may be written down.
         record = {
@@ -403,24 +491,47 @@ def main():
             "measured_at": window_log.now_iso(),
             "window_start": iso(start),
             "window_end": iso(end),
-            "settle_seconds_observed": lag,
-            "analytics_reads": polls,
+            "settled": settle.complete,
+            "settle_seconds_observed": settle.lag_seconds,
+            "settle_seconds_confirmed": settle.confirmed_seconds,
+            "analytics_reads": settle.polls,
             "models": rows,
         }
+        if not settle.complete:
+            record["shortfall"] = settle.missing
         window_log.append_window(checkpoint, record)
-        measured[plan["key"]] = record
+        # A failed window is written down so the operator can see it, and is left out
+        # of the measured set so it is re-measured rather than scored. It cost the
+        # same money as a good one, so it still counts against --max-windows.
         measured_now += 1
-        schedule.observe(lag)
-        schedule.mark_done(window_index)
-        schedule.close(window_index, settle_seconds=lag)
+        if settle.complete:
+            measured[plan["key"]] = record
+            schedule.observe(settle.lag_seconds)
+            hold_seconds = quiet.boundary_hold_seconds(schedule.observed_settles)
+            schedule.mark_done(window_index)
+        else:
+            log.corrupt[plan["key"]] = record
+        schedule.close(window_index, settle_seconds=settle.lag_seconds)
         for row in rows:
             ratio = "n/a" if row["audio_seconds_ratio"] is None else f"{row['audio_seconds_ratio']:.4f}"
             print(f"  {row['model']:<17} billed {row['audio_seconds_billed']:>9.1f} s  "
                   f"sent {row['audio_seconds_sent']:>9.1f} s  ratio {ratio}")
-        print(f"  checkpointed window {window_index + 1} of {len(planned)} to {checkpoint.name}")
+        if settle.complete:
+            print(f"  checkpointed window {window_index + 1} of {len(planned)} to "
+                  f"{checkpoint.name}")
+        else:
+            print(f"  recorded window {window_index + 1} of {len(planned)} as failed in "
+                  f"{checkpoint.name}: {window_log.describe_mismatches(settle.missing)}")
+            print("  it is not a measurement and will be re-measured; no ratio is computed "
+                  "from it")
+        hold_boundary_gap(end, hold_seconds, args.dry_run)
 
     if any(plan["key"] not in measured for plan in planned):
         print("\n" + window_log.progress_line(planned, measured, "P1 billing probe"))
+        for line in window_log.recovery_lines(
+                planned, log.corrupt, checkpoint,
+                f"probe_billing.py {'--dry-run' if args.dry_run else '--live'}"):
+            print(line)
         return 0
 
     # Every window exists, so the replicates can be rebuilt in plan order. Pairing
@@ -461,8 +572,6 @@ def main():
                 "replicates": observed,
                 "proportional": mean is not None and abs(mean - expected) <= TOLERANCE * expected,
             }
-        settle = [w["settle_seconds_observed"] for rep in replicates for w in rep["windows"]
-                  if w["settle_seconds_observed"] is not None]
         per_model[model_key] = {
             "billed_as_sent": bool(as_sent) and all(as_sent),
             "proportionality": proportionality,
