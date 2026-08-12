@@ -70,4 +70,4 @@ Builds stamp their own version and provenance into `Info.plist` (`CFBundleShortV
 
 ## How the patching works
 
-`scripts/patch_osw.py` clones upstream and applies every change as an exact string replacement, verified before writing. If upstream moves an anchor the script stops and names the file it could not patch, rather than producing a half-patched tree. Nothing in `repos/OpenSuperWhisper` is edited by hand.
+`scripts/patch_osw.py` clones [OpenSuperWhisper](https://github.com/Starmel/OpenSuperWhisper) at the pinned commit and applies every change as an exact string replacement, verified before writing. Upstream's source is fetched at build time rather than vendored here, so this repository holds only what the fork adds. If upstream moves an anchor the script stops and names the file it could not patch, rather than producing a half-patched tree. Nothing in `repos/OpenSuperWhisper` is edited by hand.
