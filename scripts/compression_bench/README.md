@@ -80,6 +80,8 @@ Then, from `scripts/compression_bench/`, with `PY=../../runs/compression-bench/.
 
 Swap `--dry-run` for `--live` in stages 3 to 5 to work on the measured run instead; the file names lose the `dry-run` infix.
 
+Stage 5 runs on its own as well as at the end. The report's cost half is arithmetic on the catalogue's published rates, which have been confirmed against real billing, so `report.py` renders it from the catalogue alone with no results file present. Every accuracy section then renders an empty state that names the stage that fills it, and no accuracy figure, table or number is drawn. That is the report's standing rule: a section either has data behind it or says it has none. The catalogue is still required, because there are no built-in rates to render a cost from.
+
 Everything is written under `runs/compression-bench/`, which is gitignored. Only `scripts/compression_bench/` is committed.
 
 Stages 1 and 2 are idempotent: an existing corpus is not re-downloaded and an existing variant is not re-encoded.
@@ -142,6 +144,6 @@ The probes are separately authorised and separately paid:
 
 ## Tests
 
-The mode split and the resume log are covered by `test_response_log.py`. The quiet-window banners, the quiet-time estimate, the stage selection and the typed confirmation are covered by `test_run_plan.py`. The model catalogue and the cost arithmetic built on it are covered by `test_catalogue.py`. All three use the standard library's `unittest`, open no socket, and need no dependency beyond `requirements.txt`. From `scripts/compression_bench/`:
+The mode split and the resume log are covered by `test_response_log.py`. The quiet-window banners, the quiet-time estimate, the stage selection and the typed confirmation are covered by `test_run_plan.py`. The model catalogue and the cost arithmetic built on it are covered by `test_catalogue.py`. The report's two halves are covered by `test_report.py`: that every cost figure is the catalogue's own arithmetic, and that no accuracy section renders a number, a chart or a figure label without a results file behind it. All four use the standard library's `unittest`, open no socket, and need no dependency beyond `requirements.txt`. From `scripts/compression_bench/`:
 
-    ../../runs/compression-bench/.venv/bin/python -m unittest test_response_log test_run_plan test_catalogue -v
+    ../../runs/compression-bench/.venv/bin/python -m unittest test_response_log test_run_plan test_catalogue test_report -v
