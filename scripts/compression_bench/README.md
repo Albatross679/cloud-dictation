@@ -22,6 +22,15 @@ Every stage except the live paths runs offline and free. The boundary is explici
 
 `--dry-run` is not a stub. It exercises the same loops, the same resume log, the same window arithmetic, the same GraphQL payload construction and the same scoring and reporting path, substituting synthesised responses at the network boundary. A dry run is how the pipeline is proven before any inference is bought, and every artifact it produces is stamped `synthetic: true` so a dry run can never be mistaken for a measurement. The report renders a banner saying so.
 
+The two modes also write different files. Stages 3, 4 and 5 each take `--dry-run` or `--live`, and each mode owns its own resume log, results file and report:
+
+| Mode | Stage 3 writes | Stage 4 writes | Stage 5 writes |
+| --- | --- | --- | --- |
+| `--live` | `responses.jsonl` | `results.json` | `report.html` |
+| `--dry-run` | `responses.dry-run.jsonl` | `results.dry-run.json` | `report.dry-run.html` |
+
+Separate files are what makes the bad state impossible rather than merely detectable: a live run cannot resume over a dry run's cells, and no results file can be a blend of measured and invented responses. On top of that, every stage checks the `synthetic` flag on the records it opens against its own mode, so a log that was copied, renamed, or left over from before the split stops the run with a message naming the file and the fix.
+
 ## Running it in order
 
 Set up once:
@@ -35,9 +44,11 @@ Then, from `scripts/compression_bench/`, with `PY=../../runs/compression-bench/.
 | --- | --- | --- |
 | 1 | `$PY prepare_corpus.py` | `corpus/manifest.jsonl`, one record per utterance with its reference, duration, word count and baseline rate. Downloads and extracts test-clean (346 MB) on first run only. |
 | 2 | `$PY compress.py` | `audio/speed-*/`, every variant, and `audio/variants.jsonl`. Verifies each file's measured duration against source over r and fails loudly if one drifts. |
-| 3 | `$PY run.py --dry-run` | `responses.jsonl`, one line per cell. Append-only and resumable. |
-| 4 | `$PY score.py` | `results.json`: the grid, the paired-bootstrap intervals, the rate curve, the failure gallery. |
-| 5 | `$PY report.py` | `report.html`. |
+| 3 | `$PY run.py --dry-run` | `responses.dry-run.jsonl`, one line per cell. Append-only and resumable. |
+| 4 | `$PY score.py --dry-run` | `results.dry-run.json`: the grid, the paired-bootstrap intervals, the rate curve, the failure gallery. |
+| 5 | `$PY report.py --dry-run` | `report.dry-run.html`. |
+
+Swap `--dry-run` for `--live` in stages 3 to 5 to work on the measured run instead; the file names lose the `dry-run` infix.
 
 Everything is written under `runs/compression-bench/`, which is gitignored. Only `scripts/compression_bench/` is committed.
 
@@ -45,7 +56,11 @@ Stages 1 and 2 are idempotent: an existing corpus is not re-downloaded and an ex
 
 ## Resume
 
-`responses.jsonl` is the resume log. `run.py` reads it, skips every cell already recorded as successful, and reports what is left before it starts. Interrupt it at any point and re-run the identical command: it continues where it stopped, never repeats a completed cell, and never pays for one twice. Failed cells are recorded too, and are retried rather than skipped.
+Each mode's response log is its resume log. `run.py` reads the log its mode owns, skips every cell already recorded as successful there, and reports what is left before it starts. Interrupt it at any point and re-run the identical command: it continues where it stopped, never repeats a completed cell, and never pays for one twice. Failed cells are recorded too, and are retried rather than skipped.
+
+A run only ever resumes over its own kind of response. A live run that finds synthetic records, or a dry run that finds real ones, prints what the file holds and what to rename it to, and exits without running a cell. A log holding both kinds cannot be resumed or scored by either mode and has to be moved aside.
+
+A `responses.jsonl` written before the split holds a dry run's records. Rename it to `responses.dry-run.jsonl`, along with `results.json` and `report.html` to their `dry-run` names, and both modes work from there.
 
 ## The probes
 
@@ -81,9 +96,15 @@ When the captain authorises inference, this is the command:
     CLOUD_DICTATION_WORKER=https://<worker>.workers.dev \
     ../../runs/compression-bench/.venv/bin/python run.py --live
 
-It prints the request count, the billed minutes and the estimated cost before the first request. Then `score.py` and `report.py` as above, unchanged.
+It prints the request count, the billed minutes and the estimated cost before the first request. Then `score.py --live` and `report.py --live`, which read and write the live set of files.
 
 The probes are separately authorised and separately paid:
 
     ../../runs/compression-bench/.venv/bin/python probe_billing.py --live
     ../../runs/compression-bench/.venv/bin/python probe_silence.py --live
+
+## Tests
+
+The mode split and the resume log are covered by `test_response_log.py`, which uses the standard library's `unittest` and needs no dependency beyond `requirements.txt`. From `scripts/compression_bench/`:
+
+    ../../runs/compression-bench/.venv/bin/python -m unittest test_response_log -v

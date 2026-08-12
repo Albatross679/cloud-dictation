@@ -15,9 +15,15 @@ AUDIO_DIR = RUN_DIR / "audio"
 PROBE_DIR = RUN_DIR / "probes"
 MANIFEST = CORPUS_DIR / "manifest.jsonl"
 VARIANTS = AUDIO_DIR / "variants.jsonl"
+# Stages 3 to 5 write one set of artifacts per mode. A dry run and a live run
+# name different files, so a resume log, a results file and a report each hold
+# one kind of response and the two can never be blended.
 RESPONSES = RUN_DIR / "responses.jsonl"
 RESULTS = RUN_DIR / "results.json"
 REPORT = RUN_DIR / "report.html"
+DRY_RUN_RESPONSES = RUN_DIR / "responses.dry-run.jsonl"
+DRY_RUN_RESULTS = RUN_DIR / "results.dry-run.json"
+DRY_RUN_REPORT = RUN_DIR / "report.dry-run.html"
 BILLING_PROBE_RESULT = PROBE_DIR / "billing.json"
 SILENCE_PROBE_RESULT = PROBE_DIR / "silence.json"
 
@@ -157,6 +163,21 @@ BILLING_PROBE_SPEEDS = [1.0, 3.0]
 SILENCE_PROBE_PADDING_S = [0, 2, 4, 8, 16]
 SILENCE_PROBE_SPEECH_S = 62.0
 SILENCE_PROBE_REPEATS = 3
+
+
+def responses_path(dry_run: bool) -> Path:
+    """Resume log for a mode."""
+    return DRY_RUN_RESPONSES if dry_run else RESPONSES
+
+
+def results_path(dry_run: bool) -> Path:
+    """Scored results for a mode."""
+    return DRY_RUN_RESULTS if dry_run else RESULTS
+
+
+def report_path(dry_run: bool) -> Path:
+    """Rendered report for a mode."""
+    return DRY_RUN_REPORT if dry_run else REPORT
 
 
 def usd_per_hour(model_key: str, speed: float) -> float:

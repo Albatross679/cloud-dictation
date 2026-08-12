@@ -1,9 +1,12 @@
 """Stage 3: send every (utterance, speed, model) cell to the worker.
 
-Appends one JSON record per response to runs/compression-bench/responses.jsonl.
-The file is the resume log: a cell already present and successful is skipped, so
-an interrupted run continues where it stopped and never pays for the same cell
-twice.
+Appends one JSON record per response to the resume log its mode owns:
+runs/compression-bench/responses.jsonl for --live and responses.dry-run.jsonl for
+--dry-run. A cell already present and successful in that log is skipped, so an
+interrupted run continues where it stopped and never pays for the same cell
+twice. Because the two modes write different files, a live run can never mistake
+a synthesised response for work it has already paid for, and the log is checked
+against the mode before anything is skipped.
 
 The mode is explicit. --dry-run synthesises responses and touches no network,
 which is how the pipeline is validated before any inference is bought. --live is
@@ -23,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 
 import config as cfg
+import response_log
 
 _lock = threading.Lock()
 
@@ -40,19 +44,10 @@ def cell_key(record):
     return f"{record['utt_id']}|{record['speed']:g}|{record['model']}"
 
 
-def load_done(path):
-    if not path.exists():
-        return set()
-    done = set()
-    with open(path) as handle:
-        for line in handle:
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if record.get("ok"):
-                done.add(cell_key(record))
-    return done
+def load_done(path, dry_run):
+    """Cells this mode has already completed, after checking the log is this mode's."""
+    records = response_log.verify_responses(path, dry_run)
+    return {cell_key(r) for r in records if r.get("ok") and bool(r.get("synthetic")) == dry_run}
 
 
 def transcribe(session, variant, model_key, base_url, token):
@@ -132,7 +127,8 @@ def main():
                         help="subset of speeds to run")
     parser.add_argument("--limit", type=int, default=None,
                         help="cap the number of utterances, for a smoke run")
-    parser.add_argument("--out", default=None, help="override the response log path")
+    parser.add_argument("--out", default=None,
+                        help="override the response log path; it is still checked against the mode")
     args = parser.parse_args()
 
     unknown = [m for m in args.models if m not in cfg.MODELS]
@@ -141,7 +137,7 @@ def main():
     if not cfg.VARIANTS.exists():
         raise SystemExit(f"missing {cfg.VARIANTS}; run compress.py first")
 
-    out_path = cfg.RUN_DIR / args.out if args.out else cfg.RESPONSES
+    out_path = cfg.RUN_DIR / args.out if args.out else cfg.responses_path(args.dry_run)
     manifest = {}
     with open(cfg.MANIFEST) as handle:
         for line in handle:
@@ -159,7 +155,7 @@ def main():
         if any(abs(variant["speed"] - s) < 1e-9 for s in args.speeds)
         for model_key in args.models
     ]
-    done = load_done(out_path)
+    done = load_done(out_path, args.dry_run)
     pending = [
         c for c in cells
         if cell_key({"utt_id": c[0]["utt_id"], "speed": c[0]["speed"], "model": c[1]}) not in done
