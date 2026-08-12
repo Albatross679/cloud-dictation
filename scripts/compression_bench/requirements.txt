@@ -1,4 +1,0 @@
-jiwer
-whisper-normalizer
-numpy
-requests
