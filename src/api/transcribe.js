@@ -46,9 +46,7 @@ export async function handleTranscribe(request, env, ctx) {
       ...(await buildAudioInput(model, bytes, contentType)),
       ...model.options({
         language,
-        diarize: url.searchParams.get('diarize') === '1',
         dictation: url.searchParams.get('dictation') === '1',
-        entities: url.searchParams.get('entities') === '1',
         terms,
       }),
     });

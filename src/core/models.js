@@ -11,16 +11,14 @@ export const MODELS = {
     usdPerAudioMinute: 0.0052,
     freeAudioMinutesPerDay: 21,
     label: 'Deepgram Nova-3',
-    notes: 'Lowest latency, punctuation and diarization, accurate on long audio. Boosts the vocabulary list, but only when a language is pinned.',
-    options: ({ language, diarize, dictation, entities, terms }) => ({
+    notes: 'Lowest latency, punctuation and casing, accurate on long audio. Boosts the vocabulary list, but only when a language is pinned.',
+    options: ({ language, dictation, terms }) => ({
       punctuate: true,
       smart_format: true,
       numerals: true,
       language: language === 'auto' ? undefined : language,
       detect_language: language === 'auto' || undefined,
-      diarize: diarize || undefined,
       dictation: dictation || undefined,
-      detect_entities: entities || undefined,
       // Language detection routes to the multilingual Nova-3, which rejects
       // keyterm outright, so boosting requires a pinned language.
       keyterm: language !== 'auto' && terms?.length ? terms : undefined,

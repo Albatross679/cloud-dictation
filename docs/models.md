@@ -8,7 +8,6 @@ Measured against this account, not quoted from vendor docs.
 | WER, 3 min varied speech | **0.0%** | 24.3% | not measured | unusable |
 | $ per audio minute | 0.0052 | **0.000513** | 0.000453 | not listed |
 | Free tier, audio min/day | 21 | **214** | 243 | 243 |
-| Diarization | yes | no | no | no |
 
 **Nova-3 is the default.** Its latency is a third of the alternatives, which is what dictation actually depends on, and it does not drop content.
 
@@ -77,6 +76,7 @@ Derived counts estimate what Cloudflare will bill. The dashboard is the authorit
 ## Careful points
 
 - **Deepgram Flux is unavailable here.** Websocket only, so it cannot serve a file upload endpoint.
+- **Diarization is not offered.** Nova-3 accepts `diarize`, but speaker labels live in `words[].speaker` and `utterances[]`, while the worker returns `alternatives[0].transcript`. Verified on two-speaker audio: output was byte-identical with it on and off. Supporting it means returning structured output, not flipping a flag.
 - **The cleanup LLM will substitute words if you let it.** Before the glossary existed it rewrote "stream it from r 2" as "stream it from Redis". The system prompt now forbids guessing at garbled proper nouns. Put your product names in the vocabulary field.
 - **Model ids drift.** `@cf/meta/llama-3.1-8b-instruct` routes to a variant deprecated on 2026-05-30 and fails through the AI binding while still working over REST. The registry in `src/core/cleanup.js` pins ids verified against the binding.
 - The worker holds the request open for the whole inference. A 20 minute file on Whisper turbo took 203 seconds.

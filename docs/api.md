@@ -22,7 +22,6 @@ Raw audio as the request body (`audio/wav`, `audio/mpeg`, `audio/webm`), up to 2
 | `cleanup` | off | `1` runs an LLM pass to strip filler words and fix punctuation |
 | `cleanup_model` | `llama-8b` | `llama-8b`, `llama-3b`, `granite-micro`, `mistral-24b` |
 | `instruction` | none | extra cleanup instruction, appended to the system prompt |
-| `diarize` | off | `1` labels speakers (nova-3 only) |
 | `dictation` | off | `1` interprets spoken punctuation (nova-3 only) |
 
 Response fields worth knowing:
