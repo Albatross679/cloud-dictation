@@ -15,6 +15,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 BUNDLE_ID="local.clouddictation.OpenSuperWhisper"
 SIGN_CN="Cloud Dictation Local Signing"
 DISPLAY_NAME="OSW Cloud"
+VERSION=$(python3 -c "import json;print(json.load(open('$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/package.json'))['version'])")
 
 IDENTITY="-"
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_CN"; then
@@ -62,6 +63,19 @@ PLIST="$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $DISPLAY_NAME" "$PLIST" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string $DISPLAY_NAME" "$PLIST"
 
+# Without this the fork keeps reporting upstream's version, which makes a bug
+# report impossible to place. Record what produced this binary.
+SOURCE_REF=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+UPSTREAM_REF=$(git -C "$CHECKOUT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+plist_set() {
+  /usr/libexec/PlistBuddy -c "Set :$1 $2" "$PLIST" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Add :$1 string $2" "$PLIST"
+}
+plist_set CFBundleShortVersionString "$VERSION"
+plist_set CFBundleVersion "$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 0)"
+plist_set CDSourceRef "$SOURCE_REF"
+plist_set CDUpstreamRef "$UPSTREAM_REF"
+
 # Re-sign ad hoc: editing Info.plist invalidates the existing signature.
 codesign --force --deep --sign "$IDENTITY" \
   --entitlements OpenSuperWhisper/OpenSuperWhisper.entitlements "$APP"
@@ -72,3 +86,4 @@ echo
 echo "Built:     $APP"
 echo "Bundle id: $BUNDLE_ID"
 echo "Signed by: $IDENTITY"
+echo "Version:   $VERSION (source $SOURCE_REF, upstream $UPSTREAM_REF)"

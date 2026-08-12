@@ -46,6 +46,21 @@ The local Whisper engine compiles even when only the Cloudflare engine is used, 
 
 `build_app.sh` signs ad hoc and ships under bundle id `local.clouddictation.OpenSuperWhisper` with the display name `OSW Cloud`, so it coexists with a stock OpenSuperWhisper install rather than sharing its preferences. If both are installed, give them different record hotkeys: the default is Option + backtick in each.
 
+## Reproducibility
+
+The tracked source rebuilds both the app and the DMG. Verified by cloning this repo to a clean directory and running the pipeline: all 20 patches applied and the app built.
+
+`repos/` and `runs/` are gitignored and regenerated, so nothing there needs backing up. Upstream is pinned to an exact commit in `scripts/patch_osw.py`, because every patch is an exact string match and a moving branch would break a rebuild months from now on whichever anchor drifted.
+
+Two things do not come from the repo:
+
+| Not reproducible | Consequence |
+|---|---|
+| `.auth-token.local` | A secret. Generate a new one and `wrangler secret put AUTH_TOKEN`. |
+| The signing certificate | A new one is a new identity, so macOS permissions need granting once more. |
+
+Builds stamp their own version and provenance into `Info.plist` (`CFBundleShortVersionString`, `CDSourceRef`, `CDUpstreamRef`) so a binary can be traced back to the commits that produced it, rather than reporting upstream's version.
+
 ## Packaging
 
 ```bash

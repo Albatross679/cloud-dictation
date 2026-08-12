@@ -12,6 +12,10 @@ import sys
 from pathlib import Path
 
 REPO = "https://github.com/Starmel/OpenSuperWhisper.git"
+# Pinned: every patch below is an exact string match against upstream source,
+# so tracking the moving branch would make a rebuild months from now fail on
+# whichever anchor drifted. Move this deliberately with `manage.sh --sync`.
+UPSTREAM_REF = "bef6bc0421d0c010e8f2fb4288c0d74978c8b964"
 ROOT = Path(__file__).resolve().parent.parent
 CHECKOUT = ROOT / "repos" / "OpenSuperWhisper"
 APP = CHECKOUT / "OpenSuperWhisper"
@@ -42,8 +46,10 @@ def clone() -> None:
     print(f"Cloning {REPO}")
     # whisper.cpp and asian-autocorrect are submodules, and Bridge.h imports
     # headers from both. Without them the Swift target fails to compile.
+    subprocess.run(["git", "clone", "--filter=blob:none", REPO, str(CHECKOUT)], check=True)
+    subprocess.run(["git", "-C", str(CHECKOUT), "checkout", "--quiet", UPSTREAM_REF], check=True)
     subprocess.run(
-        ["git", "clone", "--depth", "1", "--recurse-submodules", "--shallow-submodules", REPO, str(CHECKOUT)],
+        ["git", "-C", str(CHECKOUT), "submodule", "update", "--init", "--recursive", "--depth", "1"],
         check=True,
     )
 
