@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 import config as cfg
+import quiet_window as quiet
 from probe_billing import floor_minute, iso, settled_window, wait_for_boundary
 
 DURATION_TOLERANCE_S = 0.06
@@ -159,6 +160,10 @@ def main():
     parser.add_argument("--speech", type=float, default=cfg.SILENCE_PROBE_SPEECH_S,
                         help="seconds of speech held fixed across every padding")
     parser.add_argument("--out", default=None, help="override the result path")
+    parser.add_argument("--window-offset", type=int, default=0,
+                        help="how many quiet windows run before this probe, for the announcements")
+    parser.add_argument("--window-total", type=int, default=None,
+                        help="quiet windows in the whole sequence, for the announcements")
     args = parser.parse_args()
 
     unknown = [m for m in args.models if m not in cfg.MODELS]
@@ -202,6 +207,14 @@ def main():
     print(f"  {audio_minutes:.1f} audio minutes per model, ~${cost:.2f} total, "
           f"one settled analytics window per padding")
 
+    schedule = quiet.QuietSchedule(
+        quiet.silence_windows(args.padding, args.repeats, args.models, speech_s),
+        offset=args.window_offset,
+        total=args.window_total,
+    )
+    for line in schedule.plan_lines():
+        print(f"  {line}")
+
     base_url = token = session = None
     if args.live:
         base_url = cfg.worker_url()
@@ -209,8 +222,9 @@ def main():
         session = requests.Session()
 
     windows = []
-    for clip in clips:
+    for window_index, clip in enumerate(clips):
         print(f"\npadding {clip['padding_s']:g}s")
+        schedule.open(window_index)
         start = floor_minute(datetime.now(timezone.utc))
         worker = {m: {"requests": 0, "audio_seconds": 0.0, "neurons": 0.0, "errors": 0}
                   for m in args.models}
@@ -236,6 +250,8 @@ def main():
             fake=(fake_window(args.models, args.repeats, speech_s, clip["duration_s"])
                   if args.dry_run else None),
         )
+        schedule.observe(lag)
+        schedule.close(window_index, settle_seconds=lag)
 
         rows = []
         for model_key in args.models:

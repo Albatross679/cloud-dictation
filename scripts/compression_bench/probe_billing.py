@@ -33,6 +33,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 import config as cfg
+import quiet_window as quiet
 
 TOLERANCE = 0.02
 
@@ -116,7 +117,7 @@ def wait_for_boundary(end, dry_run):
     remaining = (end - datetime.now(timezone.utc)).total_seconds()
     if remaining > 0:
         print(f"  holding {remaining:.0f} s so the next window cannot share this minute")
-        time.sleep(remaining)
+        quiet.sleep_with_progress(remaining, "holding for the minute boundary")
 
 
 def fingerprint(totals):
@@ -163,8 +164,10 @@ def settled_window(session, start, end, models, fake=None):
                   f"reporting the last read")
             return totals, None, polls
         billed = sum(row["requests"] for row in totals.values())
-        print(f"    {lag:.0f} s after the window closed: {billed} requests visible")
-        time.sleep(cfg.ANALYTICS_POLL_INTERVAL_S)
+        print(f"    {lag:.0f} s after the window closed: {billed} requests visible, "
+              f"reads agree {agreements} of {cfg.ANALYTICS_SETTLE_AGREEMENTS - 1} times")
+        quiet.sleep_with_progress(cfg.ANALYTICS_POLL_INTERVAL_S,
+                                  "still quiet, waiting for the analytics to settle")
 
 
 def send_clip(session, path, model_key, base_url, token):
@@ -272,6 +275,10 @@ def main():
                         help="clips per window")
     parser.add_argument("--replicates", type=int, default=cfg.BILLING_PROBE_REPLICATES)
     parser.add_argument("--out", default=None, help="override the result path")
+    parser.add_argument("--window-offset", type=int, default=0,
+                        help="how many quiet windows run before this probe, for the announcements")
+    parser.add_argument("--window-total", type=int, default=None,
+                        help="quiet windows in the whole sequence, for the announcements")
     args = parser.parse_args()
 
     unknown = [m for m in args.models if m not in cfg.MODELS]
@@ -306,6 +313,14 @@ def main():
           f"filters on the four speech models and requestSource {cfg.REQUEST_SOURCE!r}, "
           f"so unrelated AI traffic is already excluded")
 
+    schedule = quiet.QuietSchedule(
+        quiet.billing_windows(args.speeds, args.replicates, args.clips, args.models, pool),
+        offset=args.window_offset,
+        total=args.window_total,
+    )
+    for line in schedule.plan_lines():
+        print(f"  {line}")
+
     base_url = token = session = None
     if args.live:
         base_url = cfg.worker_url()
@@ -316,10 +331,12 @@ def main():
         print("  " + json.dumps(redacted_payload(args.models)))
 
     replicates = []
+    window_index = 0
     for index in range(1, args.replicates + 1):
         windows = []
         for speed in args.speeds:
             print(f"\nreplicate {index} / {args.replicates}, {speed:g}x")
+            schedule.open(window_index)
             variants = batches[speed]
             start = floor_minute(datetime.now(timezone.utc))
             worker = run_batch(session, variants, args.models, base_url, token, args.dry_run)
@@ -331,6 +348,9 @@ def main():
                 session, start, end, args.models,
                 fake=fake_window(worker) if args.dry_run else None,
             )
+            schedule.observe(lag)
+            schedule.close(window_index, settle_seconds=lag)
+            window_index += 1
             rows = compare(billed, worker)
             windows.append({
                 "speed": speed,

@@ -31,6 +31,28 @@ The two modes also write different files. Stages 3, 4 and 5 each take `--dry-run
 
 Separate files are what makes the bad state impossible rather than merely detectable: a live run cannot resume over a dry run's cells, and no results file can be a blend of measured and invented responses. On top of that, every stage checks the `synthetic` flag on the records it opens against its own mode, so a log that was copied, renamed, or left over from before the split stops the run with a message naming the file and the fix.
 
+## The one command
+
+Everything, in order, from one command. From `scripts/compression_bench/`:
+
+    ../../runs/compression-bench/.venv/bin/python run_all.py --live
+
+It prints the whole plan first: every stage, the request count, the estimated cost, and how long you must not dictate. Nothing is sent until you type `RUN LIVE` at the prompt. The confirmation is read from a terminal, so a redirected or empty stdin refuses rather than starting the run. Add `--plan-only` to see the plan and stop, and `--dry-run` in place of `--live` to walk the whole sequence for free.
+
+The phase order is the point: the main grid, scoring and the report run first, because none of them constrain you, and the two probes run last, because they are the only stages that do. A stage whose output is already complete says so and is skipped, so an interrupted sequence is resumed by re-running the identical command. The first failing stage stops the sequence and the later stages do not run.
+
+`--grid-only` runs the grid, scoring and the report, with no quiet windows at all. `--probes-only` runs the two probes on their own, for doing them later or overnight.
+
+## When you must not dictate
+
+Only inside a probe's measurement windows, and the run tells you when each one starts and ends.
+
+`run.py`, the main grid, records cost and duration from each response individually. No other traffic on the account can affect it, so dictate freely for the whole of that stage. The probes are different: they read account-level analytics filtered to the four speech models and the Workers-binding request source, which is the exact path the dictation app's own requests take. Anything dictated inside a measurement window is counted into that window and silently corrupts it.
+
+Today's configuration opens 11 measurement windows: 3 replicates at 2 speeds for P1, and 5 paddings for P2. Each window costs its send time plus a settle that polls once a minute until two consecutive reads agree, capped at 30 minutes. That puts the quiet total between about 1 h 20 min and about 6 h 50 min. The runner prints the range, and each window's own share, before you commit to anything; once real settle times have been measured the estimate for the windows still to come is recomputed from them instead of the assumed bracket.
+
+Each window is announced by a full-width block that says `DO NOT DICTATE` and which window this is out of how many. When the window has closed and settled, an equally distinct block says `SAFE TO DICTATE`. During the hold and the settle a line keeps counting down, so a poll that only fires once a minute never looks like a frozen run.
+
 ## Running it in order
 
 Set up once:
@@ -94,17 +116,20 @@ Read from the environment, never hardcoded, never printed. The Cloudflare token 
 When the captain authorises inference, this is the command:
 
     CLOUD_DICTATION_WORKER=https://<worker>.workers.dev \
+    ../../runs/compression-bench/.venv/bin/python run_all.py --live
+
+That drives the stages below in order. Any of them still runs on its own, which is what `run_all.py` calls and what to reach for when only one stage needs redoing:
+
     ../../runs/compression-bench/.venv/bin/python run.py --live
-
-It prints the request count, the billed minutes and the estimated cost before the first request. Then `score.py --live` and `report.py --live`, which read and write the live set of files.
-
-The probes are separately authorised and separately paid:
-
+    ../../runs/compression-bench/.venv/bin/python score.py --live
+    ../../runs/compression-bench/.venv/bin/python report.py --live
     ../../runs/compression-bench/.venv/bin/python probe_billing.py --live
     ../../runs/compression-bench/.venv/bin/python probe_silence.py --live
 
+`run.py --live` prints the request count, the billed minutes and the estimated cost before the first request. A probe run on its own numbers its own windows; `run_all.py` passes `--window-offset` and `--window-total` so the announcements count across both probes instead of restarting.
+
 ## Tests
 
-The mode split and the resume log are covered by `test_response_log.py`, which uses the standard library's `unittest` and needs no dependency beyond `requirements.txt`. From `scripts/compression_bench/`:
+The mode split and the resume log are covered by `test_response_log.py`. The quiet-window banners, the quiet-time estimate, the stage selection and the typed confirmation are covered by `test_run_plan.py`. Both use the standard library's `unittest` and need no dependency beyond `requirements.txt`. From `scripts/compression_bench/`:
 
-    ../../runs/compression-bench/.venv/bin/python -m unittest test_response_log -v
+    ../../runs/compression-bench/.venv/bin/python -m unittest test_response_log test_run_plan -v
