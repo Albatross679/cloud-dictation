@@ -4,10 +4,16 @@
 results.dry-run.json into report.dry-run.html, and a results file scored from the
 other mode's responses stops the run.
 
-Sections in order: verdict, degradation curve, cost-accuracy frontier, the full
-grid, error against effective speaking rate, what breaking looks like, the two
-billing probes, what was actually transcribed, and what the test set can and
-cannot support.
+The cost half is arithmetic on rates confirmed against live billing, so it
+renders from config.py alone. The accuracy half needs a results file. Without
+one, every section that would carry an accuracy number renders an empty state
+naming the stage that fills it, and no accuracy figure or table is drawn.
+
+Sections in order: where this stands, the rate confirmation, free-tier reach,
+cost per hour, verdict, degradation curve, cost-accuracy frontier, the full grid,
+error against effective speaking rate, what breaking looks like, the two billing
+probes, what was actually transcribed, and what the test set can and cannot
+support.
 
 Charts size their axes to the data. Nothing is clipped at an axis maximum and no
 label is placed where another one already is, because a chart that quietly drops
@@ -35,6 +41,34 @@ SHAPES = {
     "whisper-tiny-en": "diamond",
 }
 FALLBACK_COLOR = "#6a6a6a"
+
+# What checking the published rates against real billing found, per model: the
+# relative gap between the rate the catalogue publishes and the rate the account
+# was actually charged, read from Cloudflare's aiInferenceAdaptiveGroups dataset
+# as billed neurons over billed audio seconds.
+#
+# This is the measurement, not a rate. No cost is computed from it and no rate is
+# stored here; the prices themselves come from the worker's catalogue at run
+# time. The report shows the gap next to the catalogue's current price so a
+# reader can see that the arithmetic downstream rests on a checked figure.
+RATE_CHECK_DATE = "2026-08-11"
+RATE_CHECK_BASIS = ("billed neurons over billed audio seconds, against the neuron rate behind "
+                    "the catalogue's price")
+RATE_CHECK_GAP = {
+    "nova-3": 0.0001,
+    "whisper-turbo": 0.0,
+    "whisper": 0.0,
+    "whisper-tiny-en": 0.005,
+}
+# The largest gap the check found, which is what "agree to within" quotes.
+RATE_CHECK_WORST = max(RATE_CHECK_GAP.values())
+# Whisper tiny (English) is left off the free-tier chart. Its allowance is
+# hundreds of hours a day, which is off any scale the other three share.
+FREE_TIER_CHART_OMITS = ("whisper-tiny-en",)
+# Free-tier reach is read in hours above this many minutes a day, so only the
+# model whose allowance runs to hundreds of hours changes unit.
+FREE_TIER_HOURS_ABOVE_MINUTES = 6000
+
 SURFACE = "#faf9f7"
 GRID = "#e0ddd5"
 AXIS = "#6a6a6a"
@@ -63,6 +97,7 @@ STYLE = """
   --border: var(--pb-border);    --border-soft: var(--pb-border-soft);
 }
 * { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
 body { margin: 0; background: var(--bg); color: var(--fg);
        font-family: var(--font-serif); font-size: 18px;
        line-height: var(--line-height-body); overflow-wrap: break-word; }
@@ -73,9 +108,28 @@ h1 { font-size: clamp(1.9rem, 5vw, 2.6rem); line-height: var(--line-height-tight
                 letter-spacing: 0.04em; margin: 0 0 1.6rem; }
 
 .report h3 { font-size: 1.08rem; font-weight: 700; color: var(--fg-strong);
-             margin: 2.6rem 0 0.6rem; }
+             margin: 2.6rem 0 0.6rem; scroll-margin-top: 1.6rem; }
 .report h3 .num { color: var(--fg-muted); font-family: var(--font-mono);
                   font-size: 0.8rem; margin-right: 0.5rem; }
+.report h3 .state { font-family: var(--font-mono); font-size: 0.6rem; font-weight: 400;
+                    letter-spacing: 0.1em; text-transform: uppercase; white-space: nowrap;
+                    margin-left: 0.6rem; padding: 0.14rem 0.45rem; border: 1px solid var(--border);
+                    border-radius: 999px; color: var(--fg-muted); vertical-align: 0.16em; }
+.report h3 .state.done { color: var(--accent); border-color: var(--accent); }
+
+.toc { position: fixed; top: 50%; transform: translateY(-50%);
+       left: max(1rem, calc((100vw - var(--measure)) / 2 - 11.5rem)); width: 10rem; z-index: 50; }
+.toc ul { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--border); }
+.toc a { display: block; padding: 0.32rem 0 0.32rem 0.85rem; margin-left: -2px;
+         border-left: 2px solid transparent; text-decoration: none; color: var(--fg-muted);
+         font-family: var(--font-mono); font-size: 0.66rem; letter-spacing: 0.04em;
+         text-transform: uppercase; line-height: 1.25;
+         transition: color 0.15s, border-color 0.15s; }
+.toc a:hover { color: var(--fg); }
+.toc a.active { color: var(--accent); border-left-color: var(--accent); font-weight: 700; }
+.toc a .wait { display: block; text-transform: none; letter-spacing: 0; font-size: 0.6rem;
+               font-weight: 400; color: var(--fg-muted); opacity: 0.75; }
+@media (max-width: 1290px) { .toc { display: none; } }
 .report h4 { font-size: 0.95rem; font-weight: 700; color: var(--fg-strong);
              margin: 1.4rem 0 0.4rem; }
 .report p { margin: 0 0 1rem; }
@@ -94,6 +148,14 @@ h1 { font-size: clamp(1.9rem, 5vw, 2.6rem); line-height: var(--line-height-tight
 .notice p { margin: 0.3rem 0 0; font-size: 0.9rem; color: var(--fg); }
 .notice .tag { font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.1em;
                text-transform: uppercase; color: var(--accent); font-weight: 700; }
+
+.pending { border: 1px dashed var(--border); border-radius: var(--radius-md);
+           background: transparent; padding: 1rem 1.2rem; margin: 1.2rem 0; }
+.pending .tag { display: block; font-family: var(--font-mono); font-size: 0.66rem;
+                font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+                color: var(--fg-muted); margin-bottom: 0.4rem; }
+.pending p { margin: 0; font-size: 0.88rem; color: var(--fg-muted); }
+.pending p + p { margin-top: 0.5rem; }
 
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
          gap: 0.9rem; margin: 1.2rem 0 0; }
@@ -170,6 +232,45 @@ def color_of(model_key):
 
 def label_of(model_key):
     return cfg.MODELS.get(model_key, {}).get("label", model_key)
+
+
+def pending(*paragraphs):
+    """An empty state: this section has no data, and says so in those words."""
+    body = "".join(f"<p>{p}</p>" for p in paragraphs)
+    return f'<div class="pending"><span class="tag">No data yet</span>{body}</div>'
+
+
+class Numbering:
+    """Sequential figure and table labels.
+
+    A section that renders an empty state draws nothing and takes no number, so
+    the labels stay contiguous however much of the report has data behind it.
+    """
+
+    def __init__(self):
+        self.figures = 0
+        self.tables = 0
+
+    def figure(self):
+        self.figures += 1
+        return f"Figure {self.figures}"
+
+    def table(self):
+        self.tables += 1
+        return f"Table {self.tables}"
+
+
+def per_minute(usd):
+    """A price per audio minute, which spans four decades across the catalogue."""
+    return f"${usd:.7f}".rstrip("0")
+
+
+def free_reach(model_key, speed):
+    """Free-tier reach as a readable span of speech per day."""
+    minutes = cfg.free_minutes_per_day(model_key, speed)
+    if minutes >= FREE_TIER_HOURS_ABOVE_MINUTES:
+        return f"{minutes / 60:.0f} hr"
+    return f"{minutes:.0f} min"
 
 
 def marker(shape, cx, cy, color):
@@ -444,6 +545,166 @@ def histogram(bins, counts, median, x_title):
     return "".join(out)
 
 
+def log_ticks(lo, hi):
+    """Values at 1, 2 and 5 per decade that fall inside the log10 range [lo, hi]."""
+    ticks = []
+    decade = math.floor(lo)
+    while decade <= math.ceil(hi):
+        for mult in (1, 2, 5):
+            value = mult * 10.0 ** decade
+            if lo <= math.log10(value) <= hi:
+                ticks.append(value)
+        decade += 1
+    return ticks
+
+
+def log_line_chart(series, speeds, y_title, x_title, tick_fmt, reference=None):
+    """Compression factor on x, a log y axis, one line per model, labels on the right.
+
+    The models span two to three decades, so a linear axis would flatten the
+    cheapest of them onto the baseline. On a log axis every line has the same
+    slope, which is the point: compression does the same thing to every model.
+    """
+    # The left margin holds the widest tick a log axis produces here, which is a
+    # five-decimal dollar figure, and still clears the rotated axis title.
+    W, H, ml, mr, mt, mb = 900, 400, 88, 196, 22, 50
+    iw, ih = W - ml - mr, H - mt - mb
+
+    values = [v for _, points in series for v in points]
+    if reference is not None:
+        values.append(reference[0])
+    lo, hi = math.log10(min(values) / 1.5), math.log10(max(values) * 1.5)
+    span = (speeds[-1] - speeds[0]) or 1.0
+    fx = lambda s: ml + (s - speeds[0]) / span * iw
+    fy = lambda v: mt + ih - (math.log10(v) - lo) / (hi - lo) * ih
+
+    out = [f'<svg viewBox="0 0 {W} {H}" role="img" '
+           f'aria-label="{esc(y_title)} against {esc(x_title)}">']
+    for v in log_ticks(lo, hi):
+        out.append(f'<line class="grid-line" x1="{ml}" x2="{ml+iw}" y1="{fy(v):.1f}" y2="{fy(v):.1f}"/>')
+        out.append(f'<text class="tick" x="{ml-8}" y="{fy(v)+4:.1f}" text-anchor="end">'
+                   f'{esc(tick_fmt(v))}</text>')
+    for s in speeds:
+        out.append(f'<text class="tick" x="{fx(s):.1f}" y="{mt+ih+20}" text-anchor="middle">{s:g}x</text>')
+    out.append(f'<line class="base-line" x1="{ml}" x2="{ml+iw}" y1="{mt+ih}" y2="{mt+ih}"/>')
+    if reference is not None:
+        value, caption = reference
+        out.append(f'<line x1="{ml}" x2="{ml+iw}" y1="{fy(value):.1f}" y2="{fy(value):.1f}" '
+                   f'stroke="{RULE}" stroke-width="1.2" stroke-dasharray="5 4" opacity=".8"/>')
+        out.append(f'<text class="tick" x="{ml+6}" y="{fy(value)-7:.1f}" fill="{RULE}">'
+                   f'{esc(caption)}</text>')
+
+    labels = []
+    for model_key, points in series:
+        color, shape = color_of(model_key), SHAPES.get(model_key, "circle")
+        path = " ".join(f"{fx(s):.1f},{fy(v):.1f}" for s, v in zip(speeds, points))
+        out.append(f'<polyline points="{path}" fill="none" stroke="{color}" stroke-width="2" '
+                   f'stroke-linejoin="round"/>')
+        for s, v in zip(speeds, points):
+            out.append(f'<circle cx="{fx(s):.1f}" cy="{fy(v):.1f}" r="6.5" fill="{SURFACE}"/>')
+            out.append(marker(shape, fx(s), fy(v), color))
+        labels.append((fy(points[-1]), color, label_of(model_key), shape))
+
+    for y, color, text, shape in dodge(labels, mt + 6, mt + ih):
+        out.append(marker(shape, ml + iw + 15, y, color))
+        out.append(f'<text class="lab" x="{ml+iw+26}" y="{y+3:.1f}">{esc(text)}</text>')
+
+    out.append(f'<text class="axis" x="{ml+iw/2:.0f}" y="{H-8}" text-anchor="middle">{esc(x_title)}</text>')
+    out.append(f'<text class="axis" x="16" y="{mt+ih/2:.0f}" text-anchor="middle" '
+               f'transform="rotate(-90 16 {mt+ih/2:.0f})">{esc(y_title)}</text>')
+    out.append("</svg>")
+    return "".join(out)
+
+
+def rate_check_html(numbering):
+    """The catalogue's published price beside what billing found for that rate.
+
+    The price is read from the catalogue as it stands now. The gap beside it is
+    the historical measurement, so a rate the worker changes shows a new price
+    against a check that names its own date rather than a silently restated one.
+    """
+    rows = ""
+    for model_key, model in cfg.MODELS.items():
+        gap = RATE_CHECK_GAP.get(model_key)
+        if gap is None:
+            continue
+        rows += (f'<tr><td>{esc(model["label"])}</td>'
+                 f'<td class="n">{per_minute(cfg.usd_per_audio_minute(model_key))}</td>'
+                 f'<td class="n">${cfg.usd_per_hour(model_key, cfg.BASELINE_SPEED):.4f}</td>'
+                 f'<td class="n ok">{gap * 100:.2f}%</td></tr>')
+    return (f'<figure class="tbl"><div class="tbl-scroll"><table class="data">'
+            f'<thead><tr><th>Model</th><th class="n">Published, per audio minute</th>'
+            f'<th class="n">Per hour</th>'
+            f'<th class="n">Gap against billing</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table></div>'
+            f'<figcaption class="cap"><span class="lbl">{numbering.table()}</span>The price '
+            f'columns are the worker\'s <code>/models</code> catalogue as this report was '
+            f'rendered. The gap is what the check on {RATE_CHECK_DATE} found between that '
+            f'published rate and what the account was charged, read as {RATE_CHECK_BASIS} from '
+            f'the <code>aiInferenceAdaptiveGroups</code> dataset.</figcaption></figure>')
+
+
+def free_tier_html(numbering, speeds):
+    """Free-tier reach: the tiles, the chart and the grid behind it."""
+    charted = [m for m in cfg.MODELS if m not in FREE_TIER_CHART_OMITS]
+    series = [(m, [cfg.free_minutes_per_day(m, s) for s in speeds]) for m in charted]
+    tiles = "".join(
+        f'<div class="tile"><div class="k">{esc(label_of(m))}</div>'
+        f'<div class="v">{free_reach(m, cfg.BASELINE_SPEED)}</div>'
+        f'<div class="d">free a day at 1x, {free_reach(m, 2.0)} at 2x</div></div>'
+        for m in cfg.MODELS)
+    rows = "".join(
+        f'<tr><td>{esc(label_of(m))}</td>'
+        + "".join(f'<td class="n">{free_reach(m, s)}</td>' for s in speeds)
+        + "</tr>"
+        for m in cfg.MODELS)
+    header = "".join(f'<th class="n">{s:g}x</th>' for s in speeds)
+    omitted = ", ".join(label_of(m) for m in FREE_TIER_CHART_OMITS)
+    return (f'<div class="tiles">{tiles}</div>'
+            f'<figure class="fig"><div class="chart">'
+            f'{log_line_chart(series, speeds, "free minutes of speech per day", "compression factor r", lambda v: f"{v:g} min", reference=(60, "one hour of dictation a day"))}'
+            f'</div><figcaption class="cap"><span class="lbl">{numbering.figure()}</span>'
+            f'Minutes of real speech per day that stay inside the free daily allowance, as the '
+            f'worker\'s catalogue publishes it, '
+            f'on a log axis. The dashed line is an hour of dictation a day. Only Nova-3 starts '
+            f'below it, and compression is what carries it up. {esc(omitted)} is left off: its '
+            f'allowance is {free_reach(FREE_TIER_CHART_OMITS[0], cfg.BASELINE_SPEED)} of speech a '
+            f'day at 1x, off any scale the other three share, and compression cannot move a limit '
+            f'nobody can reach.</figcaption>'
+            f'<details><summary>The same reach as numbers</summary>'
+            f'<div class="tbl-scroll"><table class="data"><thead><tr><th>Model</th>{header}'
+            f'</tr></thead><tbody>{rows}</tbody></table></div>'
+            f'<p class="none">{numbering.table()}. Free speech per day at each compression '
+            f'factor, every model, including the one the chart omits.</p></details></figure>')
+
+
+def cost_per_hour_html(numbering, speeds):
+    """Dollars per hour of real speech, and the cross-model comparison it settles."""
+    series = [(m, [cfg.usd_per_hour(m, s) for s in speeds]) for m in cfg.MODELS]
+    turbo = cfg.usd_per_hour("whisper-turbo", cfg.BASELINE_SPEED)
+    rows = "".join(
+        f'<tr><td>{esc(label_of(m))}</td>'
+        + "".join(f'<td class="n">${cfg.usd_per_hour(m, s):.5f}</td>' for s in speeds)
+        + "</tr>"
+        for m in cfg.MODELS)
+    header = "".join(f'<th class="n">{s:g}x</th>' for s in speeds)
+    savings = ", ".join(f"{(1 - 1 / s) * 100:.0f}% at {s:g}x"
+                        for s in speeds if s != cfg.BASELINE_SPEED)
+    return (f'<figure class="fig"><div class="chart">'
+            f'{log_line_chart(series, speeds, "dollars per hour of real speech", "compression factor r", lambda v: f"${v:g}", reference=(turbo, "Whisper large-v3-turbo, uncompressed"))}'
+            f'</div><figcaption class="cap"><span class="lbl">{numbering.figure()}</span>'
+            f'Cost of one hour of speech as spoken, on a log axis. Every line has the same slope, '
+            f'because compression divides the bill by r and nothing else. The dashed line is '
+            f'Whisper large-v3-turbo uncompressed, and Nova-3\'s whole curve stays above it.'
+            f'</figcaption>'
+            f'<div class="tbl-scroll"><table class="data"><thead><tr><th>Model</th>{header}'
+            f'</tr></thead><tbody>{rows}</tbody></table></div>'
+            f'<figcaption class="cap"><span class="lbl">{numbering.table()}</span>Dollars per '
+            f'hour of real speech, each row the catalogue\'s price per audio minute times 60 and '
+            f'divided by r. The saving is 1 − 1/r on every row alike: {savings}.'
+            f'</figcaption></figure>')
+
+
 def verdict_text(results):
     lines = []
     for model_key, speed in results["recommended"].items():
@@ -646,10 +907,12 @@ def silence_chart(data):
     return "".join(out)
 
 
-def billing_probe_html(path):
+def billing_probe_html(path, numbering):
     if not path.exists():
-        return ('<p class="none">Not run yet. '
-                '<code>python probe_billing.py --live</code> fills this in.</p>')
+        return pending(
+            "This probe has not run. Nothing here has been measured, and the question stays "
+            "open: the rate per minute is confirmed, the minutes are not.",
+            "<code>python probe_billing.py --live</code> fills this in.")
     data = json.loads(path.read_text())
     fast = [f"{s:g}" for s in data["speeds"] if s != cfg.BASELINE_SPEED]
     header = "".join(f'<th class="n">Billed at {s}x, share of 1x</th>' for s in fast)
@@ -675,7 +938,7 @@ def billing_probe_html(path):
             'were sent, so this run proves the arithmetic, not the billing.</p>'
             ) if data.get("synthetic") else ""
     return (f'<figure class="fig"><div class="chart">{billing_rate_chart(data)}</div>'
-            f'<figcaption class="cap"><span class="lbl">Figure 4</span>Bands are the published '
+            f'<figcaption class="cap"><span class="lbl">{numbering.figure()}</span>Bands are the published '
             f'rate divided by r, widened to stay visible; the tolerance they stand for is '
             f'{tol:.0%}. Markers are what the account was billed, per minute of speech as '
             f'spoken. A marker outside its own band is the finding.</figcaption>'
@@ -691,10 +954,12 @@ def billing_probe_html(path):
             f'<tbody>{rows}</tbody></table></div></details>{note}</figure>')
 
 
-def silence_probe_html(path):
+def silence_probe_html(path, numbering):
     if not path.exists():
-        return ('<p class="none">Not run yet. '
-                '<code>python probe_silence.py --live</code> fills this in.</p>')
+        return pending(
+            "This probe has not run. Whether the Whisper family bills the silence around the "
+            "speech is unmeasured, so no saving is claimed for trimming it.",
+            "<code>python probe_silence.py --live</code> fills this in.")
     data = json.loads(path.read_text())
     paddings = [w["padding_s"] for w in data["windows"]]
     header = "".join(f'<th class="n">+{p:g} s</th>' for p in paddings)
@@ -712,7 +977,7 @@ def silence_probe_html(path):
             'Whisper family meters files, which is the hypothesis this probe exists to test.</p>'
             ) if data.get("synthetic") else ""
     return (f'<figure class="fig"><div class="chart">{silence_chart(data)}</div>'
-            f'<figcaption class="cap"><span class="lbl">Figure 5</span>Billed seconds against '
+            f'<figcaption class="cap"><span class="lbl">{numbering.figure()}</span>Billed seconds against '
             f'added silence, with the file duration drawn as reference. A model that meters '
             f'detected speech stays flat; one that meters the file climbs the '
             f'diagonal.</figcaption>'
@@ -723,6 +988,45 @@ def silence_probe_html(path):
             f'<div class="tbl-scroll"><table class="data"><thead><tr><th>Model</th>{header}'
             f'<th class="n">Slope</th><th>Reads as</th></tr></thead>'
             f'<tbody>{rows}</tbody></table></div></details>{note}</figure>')
+
+
+def render_sections(sections):
+    """The rail that lists every section, and the headings and bodies themselves.
+
+    Numbering comes from position, so a section is added or moved in one place.
+    """
+    links, body = [], []
+    for index, (slug, title, short, chip, content) in enumerate(sections, start=1):
+        state = wait = ""
+        if chip:
+            text, settled = chip
+            state = f'<span class="state{" done" if settled else ""}">{esc(text)}</span>'
+            if not settled:
+                wait = f'<span class="wait">{esc(text)}</span>'
+        links.append(f'<li><a href="#{slug}">{index}. {esc(short)}{wait}</a></li>')
+        body.append(f'<h3 id="{slug}"><span class="num">{index}</span>{esc(title)}{state}</h3>'
+                    f'{content}')
+    rail = f'<nav class="toc" aria-label="Sections"><ul>{"".join(links)}</ul></nav>'
+    return rail, "".join(body)
+
+
+SPY_SCRIPT = """
+const links = Array.from(document.querySelectorAll('.toc a'));
+const heads = Array.from(document.querySelectorAll('.report h3[id]'));
+function spy() {
+  const line = window.innerHeight * 0.25;
+  let current = heads[0];
+  for (const head of heads) {
+    if (head.getBoundingClientRect().top <= line) current = head;
+  }
+  for (const link of links) {
+    link.classList.toggle('active', link.hash === '#' + current.id);
+  }
+}
+window.addEventListener('scroll', spy, { passive: true });
+window.addEventListener('resize', spy);
+spy();
+"""
 
 
 def main():
@@ -739,72 +1043,184 @@ def main():
     catalogue = cfg.catalogue()
     results_path = cfg.RUN_DIR / args.results if args.results else cfg.results_path(args.dry_run)
     out_path = cfg.RUN_DIR / args.out if args.out else cfg.report_path(args.dry_run)
-    if not results_path.exists():
-        stage = "score.py --dry-run" if args.dry_run else "score.py --live"
+    stage = "score.py --dry-run" if args.dry_run else "score.py --live"
+    # The cost half needs no results file. A named --results that is missing is
+    # still an error, because the caller asked for that file by name.
+    if args.results and not results_path.exists():
         raise SystemExit(f"missing {results_path}; run {stage} first")
-    results = json.loads(results_path.read_text())
-    response_log.verify_results(results_path, args.dry_run, results)
-    grid, corpus = results["grid"], results["corpus"]
-    if not grid:
-        raise SystemExit(f"{results_path} holds no scored cells")
-    models = [m for m in cfg.MODELS if any(r["model"] == m for r in grid)]
-    speeds = results["config"]["speeds"]
+    results = None
+    if results_path.exists():
+        results = json.loads(results_path.read_text())
+        response_log.verify_results(results_path, args.dry_run, results)
+        if not results["grid"]:
+            raise SystemExit(f"{results_path} holds no scored cells")
 
-    delta_series = []
-    for model_key in models:
-        rows = sorted((r for r in grid if r["model"] == model_key), key=lambda r: r["speed"])
-        delta_series.append((model_key,
-                             [r["delta_wer"] for r in rows],
-                             [tuple(r["delta_ci"]) for r in rows]))
-
-    best = {r["model"]: r for r in grid
-            if results["recommended"].get(r["model"]) == r["speed"]}
+    numbering = Numbering()
+    speeds = results["config"]["speeds"] if results else cfg.SPEEDS
+    models = ([m for m in cfg.MODELS if any(r["model"] == m for r in results["grid"])]
+              if results else list(cfg.MODELS))
+    if results:
+        grid, corpus = results["grid"], results["corpus"]
+    accuracy_chip = (("waiting on data", False) if results is None
+                     else ("dry run", False) if results.get("synthetic")
+                     else ("measured", True))
 
     def cell_class(row):
         if row["speed"] == cfg.BASELINE_SPEED:
             return ""
         return "ok" if row["passes"] else "bad"
 
-    rows = "".join(
-        f'<tr><td>{esc(label_of(r["model"]))}</td>'
-        f'<td class="n">{r["speed"]:g}x</td>'
-        f'<td class="n">{r["wer"]:.1f}%</td>'
-        f'<td class="n">{r["delta_wer"]:+.1f}</td>'
-        f'<td class="n">[{r["delta_ci"][0]:.1f}, {r["delta_ci"][1]:.1f}]</td>'
-        f'<td class="n">{r["catastrophic"]:.1f}%</td>'
-        f'<td class="n">{r["del_rate"]:.1f}%</td>'
-        f'<td class="n">${r["usd_per_hour"]:.4f}</td>'
-        f'<td class="n">{r["free_minutes_per_day"]:.0f}</td>'
-        f'<td class="n">{ms(r["latency_p50"])}</td>'
-        f'<td class="{cell_class(r)}">'
-        f'{"baseline" if r["speed"] == cfg.BASELINE_SPEED else ("within budget" if r["passes"] else "over budget")}'
-        f'</td></tr>'
-        for r in grid
-    )
+    awaiting = ("<code>run.py --live</code> and <code>score.py --live</code> fill this in. "
+                "The harness is built and the run is authorised separately.")
 
-    rate_rows = "".join(
-        f'<tr><td>{esc(label_of(r["model"]))}</td>'
-        f'<td class="n">{r["wpm_lo"]} to {r["wpm_hi"]}</td>'
-        f'<td class="n">{r["n"]}</td><td class="n">{r["wer"]:.1f}%</td></tr>'
-        for r in results["rate_curve"]
-    )
-    rate_table = (
-        f'<figure class="fig"><div class="chart">{rate_chart(results["rate_curve"], models)}</div>'
-        f'<figcaption class="cap"><span class="lbl">Figure 3</span>Error against the speaking '
-        f'rate that actually reaches the model. Bars behind the lines are how many utterances '
-        f'fall in each band: the outer bands hold a fraction of what the middle ones do, so the '
-        f'ends of every curve are the softest points on it.</figcaption>'
-        f'<details><summary>The same bands as numbers</summary>'
-        f'<div class="tbl-scroll"><table class="data"><thead><tr><th>Model</th>'
-        f'<th class="n">Effective wpm</th>'
-        f'<th class="n">Utterances</th><th class="n">WER</th></tr></thead>'
-        f'<tbody>{rate_rows}</tbody></table></div></details></figure>'
-    ) if rate_rows else (
-        '<p class="none">No speaking-rate band held enough utterances to report.</p>'
-    )
+    if results:
+        rows = "".join(
+            f'<tr><td>{esc(label_of(r["model"]))}</td>'
+            f'<td class="n">{r["speed"]:g}x</td>'
+            f'<td class="n">{r["wer"]:.1f}%</td>'
+            f'<td class="n">{r["delta_wer"]:+.1f}</td>'
+            f'<td class="n">[{r["delta_ci"][0]:.1f}, {r["delta_ci"][1]:.1f}]</td>'
+            f'<td class="n">{r["catastrophic"]:.1f}%</td>'
+            f'<td class="n">{r["del_rate"]:.1f}%</td>'
+            f'<td class="n">${r["usd_per_hour"]:.4f}</td>'
+            f'<td class="n">{r["free_minutes_per_day"]:.0f}</td>'
+            f'<td class="n">{ms(r["latency_p50"])}</td>'
+            f'<td class="{cell_class(r)}">'
+            f'{"baseline" if r["speed"] == cfg.BASELINE_SPEED else ("within budget" if r["passes"] else "over budget")}'
+            f'</td></tr>'
+            for r in grid
+        )
+        rate_rows = "".join(
+            f'<tr><td>{esc(label_of(r["model"]))}</td>'
+            f'<td class="n">{r["wpm_lo"]} to {r["wpm_hi"]}</td>'
+            f'<td class="n">{r["n"]}</td><td class="n">{r["wer"]:.1f}%</td></tr>'
+            for r in results["rate_curve"]
+        )
+    else:
+        rows = rate_rows = ""
+
+    # Every accuracy section renders either its figure or an empty state, never
+    # a shape standing in for a number it does not have.
+    if results:
+        delta_series = []
+        for model_key in models:
+            model_rows = sorted((r for r in grid if r["model"] == model_key),
+                                key=lambda r: r["speed"])
+            delta_series.append((model_key,
+                                 [r["delta_wer"] for r in model_rows],
+                                 [tuple(r["delta_ci"]) for r in model_rows]))
+        best = {r["model"]: r for r in grid
+                if results["recommended"].get(r["model"]) == r["speed"]}
+        verdict_tiles = "".join(
+            f'<div class="tile"><div class="k">{esc(label_of(m))}</div>'
+            f'<div class="v">{f"{best[m]["speed"]:g}x" if m in best else "1x"}</div>'
+            f'<div class="d">'
+            f'{f"{best[m]["saving_pct"]:.0f}% off at +{best[m]["delta_wer"]:.1f} pt" if m in best else "compression does not pay"}'
+            f'</div></div>'
+            for m in models)
+        verdict_body = (
+            f'{"".join(f"<p>{esc(line)}</p>" for line in verdict_text(results))}'
+            f'<p>A speed is recommended when the error increase is at most '
+            f'{cfg.DELTA_WER_BUDGET:.1f} percentage points, the upper bound of its 95% interval '
+            f'stays under {cfg.DELTA_WER_CI_CEILING:.1f}, and the catastrophic rate rises by at '
+            f'most {cfg.CATASTROPHIC_BUDGET:.1f} points.</p>'
+            f'<div class="tiles">{verdict_tiles}</div>')
+        degradation_body = (
+            f'<figure class="fig"><div class="chart">'
+            f'{line_chart(delta_series, speeds, "ΔWER, percentage points", "compression factor r", budget=cfg.DELTA_WER_BUDGET)}'
+            f'</div><figcaption class="cap"><span class="lbl">{numbering.figure()}</span>Change '
+            f'in error rate against each model\'s own 1x baseline, with 95% paired-bootstrap '
+            f'bands over utterances. Read the shape, not the cell: the budget is one point on an '
+            f'axis that runs to tens, so a pass or fail on any single cell comes from the full '
+            f'grid.</figcaption></figure>')
+        frontier_body = (
+            f'<figure class="fig"><div class="chart">{frontier_chart(grid, models)}</div>'
+            f'<figcaption class="cap"><span class="lbl">{numbering.figure()}</span>Error against '
+            f'cost per hour of real speech, each line walking one model from {speeds[0]:g}x to '
+            f'{speeds[-1]:g}x. Down and to the left is better. Only the vertical axis is '
+            f'measured; the horizontal one is the arithmetic already given above.'
+            f'</figcaption></figure>')
+        grid_body = (
+            f'<figure class="tbl"><div class="tbl-scroll"><table class="data">'
+            f'<thead><tr><th>Model</th><th class="n">r</th><th class="n">WER</th>'
+            f'<th class="n">ΔWER</th><th class="n">95% CI</th><th class="n">Catastrophic</th>'
+            f'<th class="n">Deletions</th><th class="n">$/hr</th><th class="n">Free min/day</th>'
+            f'<th class="n">p50</th><th>Verdict</th></tr></thead><tbody>{rows}</tbody></table>'
+            f'</div><figcaption class="cap"><span class="lbl">{numbering.table()}</span>Every '
+            f'cell of the experiment. The verdict column applies the acceptance rule stated with '
+            f'the verdict; a speed is only recommended if every slower speed also passed.'
+            f'</figcaption></figure>')
+        rate_body = (
+            f'<figure class="fig"><div class="chart">{rate_chart(results["rate_curve"], models)}</div>'
+            f'<figcaption class="cap"><span class="lbl">{numbering.figure()}</span>Error against '
+            f'the speaking rate that actually reaches the model. Bars behind the lines are how '
+            f'many utterances fall in each band: the outer bands hold a fraction of what the '
+            f'middle ones do, so the ends of every curve are the softest points on it.'
+            f'</figcaption><details><summary>The same bands as numbers</summary>'
+            f'<div class="tbl-scroll"><table class="data"><thead><tr><th>Model</th>'
+            f'<th class="n">Effective wpm</th><th class="n">Utterances</th><th class="n">WER</th>'
+            f'</tr></thead><tbody>{rate_rows}</tbody></table></div></details></figure>'
+        ) if rate_rows else pending(
+            "No speaking-rate band held enough utterances to report.")
+        gallery_body = (
+            f'<div class="panel">{gallery_html(results.get("gallery", []))}</div>'
+            f'<p class="none">The worst utterance for each model at {speeds[-1]:g}x, against its '
+            f'reference. A catastrophic rate is a count; this is what it is a count of.</p>')
+        corpus_body = (
+            f'<figure class="tbl"><div class="tbl-scroll"><table class="data">'
+            f'<thead><tr><th>Corpus</th><th>Source</th><th class="n">Utterances</th>'
+            f'<th class="n">Total audio</th><th class="n">Mean duration</th>'
+            f'<th class="n">Reference words</th><th class="n">Median rate</th></tr></thead>'
+            f'<tbody><tr><td>LibriSpeech</td><td>test-clean split, seed {cfg.SAMPLE_SEED}</td>'
+            f'<td class="n">{corpus["utterances"]}</td>'
+            f'<td class="n">{corpus["total_minutes"]:.1f} min</td>'
+            f'<td class="n">{corpus["mean_duration_s"]:.1f} s</td>'
+            f'<td class="n">{corpus["words"]:,}</td>'
+            f'<td class="n">{corpus["wpm_median"]:.0f} wpm</td></tr></tbody></table></div>'
+            f'<figcaption class="cap"><span class="lbl">{numbering.table()}</span>Sampled with a '
+            f'fixed seed, capped at {cfg.MAX_UTTERANCE_SECONDS:g} s per utterance, no other '
+            f'filtering. Every accuracy cell is scored on these same {corpus["utterances"]} '
+            f'utterances, which is what makes the paired intervals valid.</figcaption></figure>'
+            f'<figure class="fig"><div class="chart">'
+            f'{histogram(corpus["wpm_bins"], corpus["wpm_histogram"], corpus["wpm_median"], "baseline words per minute")}'
+            f'</div><figcaption class="cap"><span class="lbl">{numbering.figure()}</span>How fast '
+            f'the corpus speaks before any compression, from {corpus["wpm_min"]:.0f} to '
+            f'{corpus["wpm_max"]:.0f} wpm. Multiply this distribution by r to see what each speed '
+            f'actually asks a model to follow.</figcaption></figure>')
+    else:
+        verdict_body = pending(
+            "There is no accuracy verdict, because nothing has been transcribed. No speed is "
+            "recommended or ruled out here, and nothing in the cost sections above implies one.",
+            awaiting)
+        degradation_body = pending(
+            "No error rate has been measured at any speed, so there is no curve to draw.",
+            awaiting)
+        frontier_body = pending(
+            "The horizontal axis of this chart is already fixed by the cost sections above. The "
+            "vertical axis is WER, which does not exist yet. Half a chart is not a chart, so "
+            "none is drawn.",
+            awaiting)
+        grid_body = pending(
+            "The cost and free-tier columns of this grid are the two tables above. The accuracy "
+            "columns, WER against speed and its intervals, have no values yet.",
+            awaiting)
+        rate_body = pending(
+            "The equation above is a definition, not a result. No band of effective speaking "
+            "rate has an error rate attached to it yet.",
+            awaiting)
+        gallery_body = pending(
+            "Nothing has been transcribed, so there is no failure to show. This section is for "
+            "real transcripts of real utterances and holds nothing else.",
+            awaiting)
+        corpus_body = pending(
+            f"No corpus has been sampled. The settled plan in <code>config.py</code> is "
+            f"{cfg.SAMPLE_SIZE} utterances of LibriSpeech test-clean, seed {cfg.SAMPLE_SEED}, "
+            f"capped at {cfg.MAX_UTTERANCE_SECONDS:g} s each. What was actually drawn is "
+            f"reported here once <code>prepare_corpus.py</code> has run.",
+            awaiting)
 
     banner = ""
-    if results.get("synthetic"):
+    if results and results.get("synthetic"):
         banner = (f'<div class="notice"><span class="tag">Dry run</span>'
                   f'<p>{results["synthetic"]} of {results["responses"]} responses were synthesised '
                   f'by <code>run.py --dry-run</code>. Every accuracy number below is the shape of '
@@ -817,123 +1233,202 @@ def main():
                    f'{esc(catalogue.fetched_at)}. Re-run against the worker before quoting a '
                    f'cost.</p></div>')
 
+    nova_top = cfg.usd_per_hour("nova-3", speeds[-1])
+    turbo_base = cfg.usd_per_hour("whisper-turbo", cfg.BASELINE_SPEED)
+    settled_body = (
+        f'<p>This report has two halves and they are at different stages. The cost half is '
+        f'finished: the per-minute rates it rests on are read from the worker that serves them, '
+        f'and they were checked against this account\'s real billing and agreed, so the dollars '
+        f'and the free minutes below are exact arithmetic '
+        f'rather than estimates. The accuracy half needs an inference run.</p>'
+        f'<p>'
+        + ("That run has not happened. No accuracy figure, table or chart appears below. Each "
+           "section that would hold one says so in place of a number, and none of it should be "
+           "read as a result."
+           if results is None else
+           "The accuracy sections below come from a dry run: the responses behind them were "
+           "synthesised, so they show the shape of the pipeline and not the behaviour of any "
+           "model."
+           if results.get("synthetic") else
+           "That run has happened, and the accuracy sections below are measured.")
+        + f'</p>'
+        f'<p>One conclusion is already available and does not wait on the measurement. '
+        f'Compression divides the bill by r and does nothing else, so it moves every model by '
+        f'the same proportion; model choice moves it by an order of magnitude. Nova-3 compressed '
+        f'all the way to {speeds[-1]:g}x costs ${nova_top:.4f} an hour, which is still '
+        f'{nova_top / turbo_base:.1f} times the ${turbo_base:.4f} that Whisper large-v3-turbo '
+        f'costs uncompressed.</p>'
+        f'<p>So if the accuracy results show turbo holding up, switching model beats compressing '
+        f'and compressing Nova-3 is the wrong lever. The only argument left for Nova-3 would be '
+        f'its latency, not its price. What the measurement can still change is whether turbo is '
+        f'good enough to switch to, not which lever is cheaper.</p>')
+
+    exact = sum(1 for gap in RATE_CHECK_GAP.values() if not gap)
+    rate_check_body = (
+        f'<p>Every cost figure in this report is arithmetic on one number per model: what '
+        f'Cloudflare charges for a minute of audio. The worker publishes that price and this '
+        f'report reads it from the worker, so nothing here can drift away from what the app '
+        f'itself serves. A published price is still an assumption until someone compares it with '
+        f'a bill. It was compared. On {RATE_CHECK_DATE} the four published rates were read back '
+        f'out of this account\'s own billing analytics, as {RATE_CHECK_BASIS}.</p>'
+        f'{rate_check_html(numbering)}'
+        f'<p>All four agree to within {RATE_CHECK_WORST * 100:.1f} percent and {exact} of the '
+        f'four agree exactly. That agreement is itself the finding: it means nothing downstream '
+        f'of these rates has to be measured. The dollars and the free-tier minutes that follow '
+        f'were exact before any inference was bought, and they stay exact whatever the accuracy '
+        f'run returns.</p>'
+        f'<p>The prices are internally consistent too. Nova-3\'s published price per audio minute '
+        f'comes to ${cfg.usd_per_hour("nova-3", cfg.BASELINE_SPEED):.4f} an hour, which is '
+        f'Cloudflare\'s own published hourly figure for it, so the per-minute price and the '
+        f'per-hour price agree without either being derived from the other.</p>'
+        f'<p>What the check does not settle is whether billed audio seconds actually fall when '
+        f'the same speech is time-compressed. Confirming a rate per minute is not confirming the '
+        f'minutes, and that is what probe P1 below is for.</p>')
+
+    free_tier_body = (
+        f'<p>At light use the money is not the story. Somebody dictating for half an hour a day '
+        f'is choosing between a few cents a month and a few cents a month, whichever model they '
+        f'pick. The free tier is the story, because it is the difference between a bill and no '
+        f'bill at all.</p>'
+        f'<p>Cloudflare gives every plan one free allowance a day, spent at whatever the model in '
+        f'use costs, which is why the same allowance buys wildly different amounts of speech. On '
+        f'Nova-3 it is {free_reach("nova-3", cfg.BASELINE_SPEED)} of dictation a day at normal '
+        f'speed. Compressed 2x it is {free_reach("nova-3", 2.0)}, and at '
+        f'{speeds[-1]:g}x it is {free_reach("nova-3", speeds[-1])}. Twenty-one minutes is a '
+        f'habit that overruns; forty-two is a habit that fits. For a daily dictation user that '
+        f'single change is what compression buys.</p>'
+        f'<p>Every other model is already past the point where the allowance binds. Whisper '
+        f'large-v3-turbo gives {free_reach("whisper-turbo", cfg.BASELINE_SPEED)} of free speech a '
+        f'day at 1x and Whisper base gives {free_reach("whisper", cfg.BASELINE_SPEED)}. Nobody '
+        f'dictates for three and a half hours a day, so on those models compression moves a '
+        f'limit that nobody reaches. The free-tier argument for compression exists on Nova-3 and '
+        f'nowhere else.</p>'
+        f'{free_tier_html(numbering, speeds)}')
+
+    cost_body = (
+        f'<p>Compression divides the bill by r exactly, so the saving is 1 − 1/r and it is the '
+        f'same on every model: 50% at 2x, 67% at {speeds[-1]:g}x. That is the whole of what '
+        f'compression does to cost.</p>'
+        f'<p>Which is why the comparison worth making runs across the models rather than along '
+        f'one of their rows. The gap between the cheapest and dearest model is a factor of '
+        f'{cfg.usd_per_hour("nova-3", cfg.BASELINE_SPEED) / cfg.usd_per_hour("whisper-tiny-en", cfg.BASELINE_SPEED):.0f}; '
+        f'the gap compression can open within one model is a factor of {speeds[-1]:g}.</p>'
+        f'<p>Concretely: Nova-3 compressed to {speeds[-1]:g}x costs ${nova_top:.4f} an hour, and '
+        f'Whisper large-v3-turbo costs ${turbo_base:.4f} uncompressed. Compressing the expensive '
+        f'model never reaches the price of not choosing it, so if turbo holds up on accuracy the '
+        f'lever is the model rather than the compression.</p>'
+        f'{cost_per_hour_html(numbering, speeds)}')
+
+    probes_body = (
+        f'<p>Cost above is arithmetic on rates confirmed against billing. These two probes are '
+        f'what would stop the remaining step, from a rate per minute to a bill for a recording, '
+        f'from resting on an assumption.</p>'
+        f'<h4>P1 · Do billed seconds fall with compression?</h4>'
+        f'{billing_probe_html(cfg.BILLING_PROBE_RESULT, numbering)}'
+        f'<h4>P2 · Is silence billed?</h4>'
+        f'{silence_probe_html(cfg.SILENCE_PROBE_RESULT, numbering)}')
+
+    scope_body = (
+        '<ul class="findings">'
+        '<li><strong>Supports.</strong> A calibrated answer for read audiobook speech in studio '
+        'conditions. LibriSpeech test-clean has published Whisper numbers, so a wrong absolute '
+        'WER at 1x would expose a broken harness before any compression result was trusted.</li>'
+        '<li><strong>Does not support.</strong> Consumer microphones, room noise, non-native '
+        'accents, spontaneous disfluency, the app\'s own recording path, and product-name '
+        'accuracy. Every number here is a best case. A speed that looks safe on this corpus is '
+        'not yet a claim that it is safe on a laptop microphone.</li>'
+        '<li><strong>Known unfairness.</strong> All four models likely saw LibriSpeech-like '
+        'audio in training, which flatters the 1x baselines. The report leads with ΔWER so that '
+        'flattery cancels.</li>'
+        '<li><strong>Says nothing about cost.</strong> The corpus is an accuracy instrument. The '
+        'cost half of this report comes from billing, not from it, and would read the same if '
+        'the corpus were replaced.</li>'
+        '</ul>')
+
+    # A cost section is only marked confirmed when its prices came from the
+    # worker on this run. Served from the cache they are as old as the cache, and
+    # the chip says so rather than vouching for them.
+    settled = ("stale rates", False) if catalogue.from_cache else ("confirmed", True)
+    sections = [
+        ("stands", "Where this stands", "Where this stands", None, settled_body),
+        ("rates", "The rates were checked against a bill", "Rate check", settled, rate_check_body),
+        ("free-tier", "Free-tier reach", "Free tier", settled, free_tier_body),
+        ("cost", "Cost per hour", "Cost per hour", settled, cost_body),
+        ("verdict", "Verdict on accuracy", "Verdict", accuracy_chip, verdict_body),
+        ("degradation", "The degradation curve", "Degradation", accuracy_chip, degradation_body),
+        ("frontier", "The frontier", "Frontier", accuracy_chip, frontier_body),
+        ("grid", "Full grid", "Full grid", accuracy_chip, grid_body),
+        ("speaking-rate", "Error against effective speaking rate", "Speaking rate",
+         accuracy_chip,
+         '<p>A compression factor is not a physical quantity. What reaches the model is a '
+         'speaking rate, and that is what transfers to a speaker whose natural pace differs from '
+         'this corpus.</p>'
+         '<div class="eq"><span class="expr">wpm_eff(u, r) = r · wpm₀(u)</span>'
+         '<span class="reading">Effective words per minute equals the compression factor times '
+         'the utterance\'s own baseline rate.</span></div>' + rate_body),
+        ("breaking", "What breaking looks like", "Breaking", accuracy_chip, gallery_body),
+        ("probes", "Billing probes", "Billing probes", None, probes_body),
+        ("corpus", "What was actually transcribed", "Corpus", accuracy_chip, corpus_body),
+        ("scope", "What this test set can and cannot support", "Scope", None, scope_body),
+    ]
+    rail, body = render_sections(sections)
+
+    rate_source = (f'Rates from the worker\'s <code>/models</code> catalogue, '
+                   f'{"cached copy, " if catalogue.from_cache else ""}fetched '
+                   f'{esc(catalogue.fetched_at)}, checked against billing on {RATE_CHECK_DATE}')
+
+    if results:
+        meta = (f'LibriSpeech test-clean · {corpus["utterances"]} utterances · '
+                f'{len(speeds)} compression factors · {len(models)} models · '
+                f'seed {cfg.SAMPLE_SEED}')
+        abstract = (
+            f'Cloudflare bills speech to text per audio minute, so compressing a recording by a '
+            f'factor r cuts that bill by exactly 1 − 1/r, and the worker\'s published rates, '
+            f'checked against live billing, make that arithmetic exact. '
+            f'What compression costs in accuracy is not '
+            f'arithmetic, and this is the measurement of it: {corpus["utterances"]} utterances '
+            f'of {esc(results["config"]["corpus"])}, {corpus["total_minutes"]:.1f} minutes of '
+            f'speech, put through {len(models)} models at {len(speeds)} speeds. Cost is '
+            f'computed; only accuracy and latency are measured.')
+        provenance = (f'Generated from <code>{esc(results_path.name)}</code>. {rate_source}. '
+                      f'{esc(results["failures"])} failed responses excluded.')
+    else:
+        meta = (f'LibriSpeech test-clean · {cfg.SAMPLE_SIZE} utterances planned · '
+                f'{len(speeds)} compression factors · {len(models)} models · '
+                f'seed {cfg.SAMPLE_SEED}')
+        abstract = (
+            f'Cloudflare bills speech to text per audio minute, so compressing a recording by a '
+            f'factor r cuts that bill by exactly 1 − 1/r. That half of the trade is settled and '
+            f'is written up here from the per-minute rates the worker publishes, which have been '
+            f'checked against this account\'s own '
+            f'billing: what compression saves, and the free tier it does or does not keep a user '
+            f'inside. What compression costs in accuracy is not arithmetic and has not been '
+            f'measured. The harness for it is built and the inference is authorised separately, '
+            f'so every accuracy section below stands empty and says so.')
+        provenance = f'Generated with no results file. {rate_source}.'
+
     doc = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>cloud-dictation: audio compression versus transcription cost</title>
-<style>{STYLE}</style></head><body><main class="report">
+<style>{STYLE}</style></head><body>
+{rail}
+<main class="report">
 
-<h1>Audio compression versus transcription accuracy</h1>
-<p class="project-meta">LibriSpeech test-clean · {corpus["utterances"]} utterances ·
-{len(speeds)} compression factors · {len(models)} models · seed {cfg.SAMPLE_SEED}</p>
+<h1>Audio compression versus transcription cost</h1>
+<p class="project-meta">{meta}</p>
 
 <div class="abstract"><h2>Abstract</h2>
-<p>Cloudflare bills speech to text per audio minute, so compressing a recording by a factor
-r cuts that bill by exactly 1 − 1/r. What compression costs in accuracy is not arithmetic,
-and this is the measurement of it: {corpus["utterances"]} utterances of
-{esc(results["config"]["corpus"])}, {corpus["total_minutes"]:.1f} minutes of speech, put
-through {len(models)} models at {len(speeds)} speeds. Cost is computed from the published
-per-minute rates; only accuracy and latency are measured.</p></div>
+<p>{abstract}</p></div>
 {banner}
+{body}
 
-<h3><span class="num">1</span>Verdict</h3>
-{"".join(f"<p>{esc(line)}</p>" for line in verdict_text(results))}
-<p>A speed is recommended when the error increase is at most {cfg.DELTA_WER_BUDGET:.1f}
-percentage points, the upper bound of its 95% interval stays under
-{cfg.DELTA_WER_CI_CEILING:.1f}, and the catastrophic rate rises by at most
-{cfg.CATASTROPHIC_BUDGET:.1f} points.</p>
-<div class="tiles">
-{"".join(
-    f'<div class="tile"><div class="k">{esc(label_of(m))}</div>'
-    f'<div class="v">{(f"{best[m]['speed']:g}x" if m in best else "1x")}</div>'
-    f'<div class="d">{(f"{best[m]['saving_pct']:.0f}% off at +{best[m]['delta_wer']:.1f} pt" if m in best else "compression does not pay")}</div></div>'
-    for m in models)}
-</div>
+<p class="project-meta" style="margin-top:2.4rem">{provenance}</p>
+</main><script>{SPY_SCRIPT}</script></body></html>"""
 
-<h3><span class="num">2</span>The degradation curve</h3>
-<figure class="fig"><div class="chart">{line_chart(delta_series, speeds,
-    "ΔWER, percentage points", "compression factor r", budget=cfg.DELTA_WER_BUDGET)}</div>
-<figcaption class="cap"><span class="lbl">Figure 1</span>Change in error rate against each
-model's own 1x baseline, with 95% paired-bootstrap bands over utterances. Read the shape,
-not the cell: the budget is one point on an axis that runs to tens, so a pass or fail on any
-single cell comes from the grid in section 4.</figcaption></figure>
-
-<h3><span class="num">3</span>The frontier</h3>
-<figure class="fig"><div class="chart">{frontier_chart(grid, models)}</div>
-<figcaption class="cap"><span class="lbl">Figure 2</span>Error against cost per hour of real
-speech, each line walking one model from {speeds[0]:g}x to {speeds[-1]:g}x. Down and to the
-left is better. Only the vertical axis is measured; the horizontal one is arithmetic on the
-published rates.</figcaption></figure>
-
-<h3><span class="num">4</span>Full grid</h3>
-<figure class="tbl"><div class="tbl-scroll"><table class="data">
-<thead><tr><th>Model</th><th class="n">r</th><th class="n">WER</th><th class="n">ΔWER</th>
-<th class="n">95% CI</th><th class="n">Catastrophic</th><th class="n">Deletions</th>
-<th class="n">$/hr</th><th class="n">Free min/day</th>
-<th class="n">p50</th><th>Verdict</th></tr></thead><tbody>{rows}</tbody></table></div>
-<figcaption class="cap"><span class="lbl">Table 1</span>Every cell of the experiment. The
-verdict column applies the acceptance rule in section 1; a speed is only recommended if every
-slower speed also passed.</figcaption></figure>
-
-<h3><span class="num">5</span>Error against effective speaking rate</h3>
-<p>A compression factor is not a physical quantity. What reaches the model is a speaking
-rate, and that is what transfers to a speaker whose natural pace differs from this corpus.</p>
-<div class="eq"><span class="expr">wpm_eff(u, r) = r · wpm₀(u)</span>
-<span class="reading">Effective words per minute equals the compression factor times the
-utterance's own baseline rate.</span></div>
-{rate_table}
-
-<h3><span class="num">6</span>What breaking looks like</h3>
-<div class="panel">{gallery_html(results.get("gallery", []))}</div>
-<p class="none">The worst utterance for each model at {speeds[-1]:g}x, against its reference.
-A catastrophic rate is a count; this is what it is a count of.</p>
-
-<h3><span class="num">7</span>Billing checks</h3>
-<p>Cost here is arithmetic on the published rates. These two probes are what stop that
-arithmetic from resting on an assumption.</p>
-<h4>P1 · Do billed seconds fall with compression?</h4>
-{billing_probe_html(cfg.BILLING_PROBE_RESULT)}
-<h4>P2 · Is silence billed?</h4>
-{silence_probe_html(cfg.SILENCE_PROBE_RESULT)}
-
-<h3><span class="num">8</span>What was actually transcribed</h3>
-<figure class="tbl"><div class="tbl-scroll"><table class="data">
-<thead><tr><th>Corpus</th><th>Source</th><th class="n">Utterances</th><th class="n">Total audio</th>
-<th class="n">Mean duration</th><th class="n">Reference words</th><th class="n">Median rate</th></tr></thead>
-<tbody><tr><td>LibriSpeech</td><td>test-clean split, seed {cfg.SAMPLE_SEED}</td>
-<td class="n">{corpus["utterances"]}</td><td class="n">{corpus["total_minutes"]:.1f} min</td>
-<td class="n">{corpus["mean_duration_s"]:.1f} s</td><td class="n">{corpus["words"]:,}</td>
-<td class="n">{corpus["wpm_median"]:.0f} wpm</td></tr></tbody></table></div>
-<figcaption class="cap"><span class="lbl">Table 2</span>Sampled with a fixed seed, capped at
-{cfg.MAX_UTTERANCE_SECONDS:g} s per utterance, no other filtering. Every cell above is scored
-on these same {corpus["utterances"]} utterances, which is what makes the paired intervals
-valid.</figcaption></figure>
-<figure class="fig"><div class="chart">{histogram(corpus["wpm_bins"], corpus["wpm_histogram"],
-    corpus["wpm_median"], "baseline words per minute")}</div>
-<figcaption class="cap"><span class="lbl">Figure 6</span>How fast the corpus speaks before
-any compression, from {corpus["wpm_min"]:.0f} to {corpus["wpm_max"]:.0f} wpm. Multiply this
-distribution by r to see what each speed actually asks a model to follow.</figcaption></figure>
-
-<h3><span class="num">9</span>What this test set can and cannot support</h3>
-<ul class="findings">
-<li><strong>Supports.</strong> A calibrated answer for read audiobook speech in studio
-conditions. LibriSpeech test-clean has published Whisper numbers, so a wrong absolute WER at
-1x would have exposed a broken harness before any compression result was trusted.</li>
-<li><strong>Does not support.</strong> Consumer microphones, room noise, non-native accents,
-spontaneous disfluency, the app's own recording path, and product-name accuracy. Every number
-here is a best case. A speed that looks safe on this corpus is not yet a claim that it is safe
-on a laptop microphone.</li>
-<li><strong>Known unfairness.</strong> All four models likely saw LibriSpeech-like audio in
-training, which flatters the 1x baselines. The report leads with ΔWER so that flattery
-cancels.</li>
-</ul>
-
-<p class="project-meta" style="margin-top:2.4rem">Generated from
-<code>{esc(results_path.name)}</code>. Rates from the worker's <code>/models</code> catalogue,
-{"cached copy, " if catalogue.from_cache else ""}fetched {esc(catalogue.fetched_at)}.
-{esc(results["failures"])} failed responses excluded.</p>
-</main></body></html>"""
-
+    # The cost half renders before any earlier stage has run, so this is the
+    # first thing that may need the run directory to exist.
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(doc)
     print(f"wrote {out_path}")
 
