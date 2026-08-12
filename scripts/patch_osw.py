@@ -55,7 +55,12 @@ def clone() -> None:
 
 
 def add_engine_file() -> None:
-    for name, subdir in (("CloudflareEngine.swift", "Engines"), ("CloudflareUsageView.swift", "Engines")):
+    for name, subdir in (
+        ("CloudflareEngine.swift", "Engines"),
+        ("CloudflareUsageView.swift", "Engines"),
+        ("DictationFailure.swift", "Engines"),
+        ("AuthTokenStore.swift", "Utils"),
+    ):
         shutil.copyfile(ROOT / "src" / "client" / name, APP / subdir / name)
         print(f"  + {subdir}/{name}")
 
@@ -72,8 +77,12 @@ def patch_preferences() -> None:
     @UserDefault(key: "cloudflareEndpoint", defaultValue: "")
     var cloudflareEndpoint: String
 
-    @UserDefault(key: "cloudflareAuthToken", defaultValue: "")
-    var cloudflareAuthToken: String
+    /// Keychain rather than UserDefaults: a bearer token in a plist is readable
+    /// with `defaults read` by anything running as this user.
+    var cloudflareAuthToken: String {
+        get { AuthTokenStore.token }
+        set { AuthTokenStore.token = newValue }
+    }
 
     @UserDefault(key: "cloudflareModel", defaultValue: "nova-3")
     var cloudflareModel: String
@@ -519,6 +528,15 @@ def patch_transcription_settings() -> None:
     )
 
 
+def patch_failure_paths() -> None:
+    """Keep a failed dictation instead of printing and deleting it."""
+    anchor = """                    print("Error transcribing audio: \\(error)")
+                    try? FileManager.default.removeItem(at: tempURL)"""
+    replacement = """                    await DictationFailure.record(audioAt: tempURL, error: error)"""
+    for name in ("ContentView.swift", "Indicator/IndicatorWindow.swift"):
+        patch(APP / name, anchor, replacement, f"{name}: surface dictation failures")
+
+
 def patch_content_view() -> None:
     """Show today's Cloudflare spend in the main window's hint column."""
     path = APP / "ContentView.swift"
@@ -556,6 +574,7 @@ def main() -> int:
         patch_language_util()
         patch_fluidaudio_engine()
         patch_transcription_settings()
+        patch_failure_paths()
         patch_content_view()
     except PatchError as err:
         print(f"\nFAILED: {err}", file=sys.stderr)

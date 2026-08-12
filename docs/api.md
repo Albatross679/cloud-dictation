@@ -8,7 +8,7 @@
 | `POST /usage/reset` | bearer | clear the counters |
 | `POST /transcribe` | bearer | audio bytes in, JSON out |
 
-Auth is a single bearer token compared in constant time, set as the `AUTH_TOKEN` secret.
+Auth is a single bearer token compared in constant time, set as the `AUTH_TOKEN` secret. The app keeps its copy in the login Keychain, not UserDefaults.
 
 ## POST /transcribe
 

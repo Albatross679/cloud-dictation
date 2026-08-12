@@ -47,9 +47,15 @@ Distribution needs an Apple Developer ID, after which the same script signs, not
 
 The DMG format is not what makes an app distributable; notarization is. Upstream ships a notarized DMG, which is why installing OpenSuperWhisper never required Xcode.
 
+Notarization needs an Apple Developer Program membership, currently $99 a year. Nothing else substitutes: a self-signed certificate keeps permissions stable on the machine that built the app, but Gatekeeper still refuses it elsewhere. Until then a recipient must clear the quarantine flag by hand:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/OSW Cloud.app"
+```
+
 ## Reproducibility
 
-The tracked source rebuilds both the app and the DMG. Verified by cloning the repo to a clean directory and running the pipeline: all 20 patches applied and the app built.
+The tracked source rebuilds both the app and the DMG. Verified by cloning the repo to a clean directory and running the pipeline: all patches applied and the app built.
 
 `repos/` and `runs/` are gitignored and regenerated, so nothing there needs backing up. Upstream is pinned to an exact commit in `scripts/patch_osw.py`, because every patch is an exact string match and a moving branch would break a rebuild on whichever anchor drifted. Move the pin deliberately with `manage.sh --sync`.
 
