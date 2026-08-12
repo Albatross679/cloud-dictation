@@ -140,13 +140,29 @@ query BilledInference($account: String!, $start: Time!, $end: Time!,
 """
 
 # Analytics settle after a lag that is measured rather than assumed. A window is
-# polled at minute granularity until every model's billed request count equals what
-# that window sent, and ANALYTICS_SETTLE_COMPLETE_READS says how many consecutive
-# reads must show that before the window is taken as finished. A window that
-# reaches the timeout without it is recorded as failed and re-measured.
+# polled at minute granularity until every model's billed request count has reached
+# at least what that window sent, and ANALYTICS_SETTLE_COMPLETE_READS says how many
+# consecutive reads must hold the same counts before the bill is taken as finished
+# arriving. A window that reaches the timeout still billed for less than it sent is
+# recorded as failed and re-measured.
 ANALYTICS_POLL_INTERVAL_S = 60
 ANALYTICS_SETTLE_COMPLETE_READS = 2
 ANALYTICS_SETTLE_TIMEOUT_S = 1800
+
+# Cloudflare bills more inferences than the client sends, so the billed count
+# reaching the sent count is the floor of a settled window rather than its value.
+# The measured excess is 0% at 10 requests, 4% at 50, and 18% for 50 requests sent
+# alongside 150 others across four models. EXCESS_IMPLAUSIBLE_ABOVE sits above that
+# worst observed figure with room for a heavier window: a model billed for more
+# than this share above what it sent is read as another source's traffic inside the
+# window, not as the platform, and that window is re-measured.
+EXCESS_IMPLAUSIBLE_ABOVE = 0.25
+# How far the excess rate may differ between two speeds before the billed-seconds
+# ratio between them stops meaning anything. Billed requests the client never
+# issued carry billed seconds, so a difference of this size moves the ratio by
+# about as much, which is why the budget is the tolerance the proportionality
+# verdict itself is held to.
+EXCESS_SPREAD_BUDGET = 0.02
 
 # Probe P1 asks whether billed audio seconds fall proportionally when the same
 # speech is time-compressed. One batch per window: per-clip deltas are

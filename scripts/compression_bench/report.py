@@ -12,8 +12,12 @@ naming the stage that fills it, and no accuracy figure or table is drawn.
 Sections in order: where this stands, the rate confirmation, free-tier reach,
 cost per hour, verdict, degradation curve, cost-accuracy frontier, the full grid,
 error against effective speaking rate, what breaking looks like, the two billing
-probes, what was actually transcribed, and what the test set can and cannot
-support.
+probes, the platform's billing excess, what was actually transcribed, and what the
+test set can and cannot support.
+
+The billing excess is stated as what was counted; the mechanism behind it is
+labelled a hypothesis. P1's ratio between speeds is published only when the excess
+rate is the same at both.
 
 Charts size their axes to the data. Nothing is clipped at an axis maximum and no
 label is placed where another one already is, because a chart that quietly drops
@@ -24,6 +28,7 @@ import argparse
 import html
 import json
 import math
+import re
 
 import config as cfg
 import response_log
@@ -62,6 +67,18 @@ RATE_CHECK_GAP = {
 }
 # The largest gap the check found, which is what "agree to within" quotes.
 RATE_CHECK_WORST = max(RATE_CHECK_GAP.values())
+# What sending a known number of requests and reading this account's billing back
+# found. Each row is a controlled send in which every request returned 200, the
+# worker made one inference call per request, and nothing retried on this side.
+EXCESS_CHECK_DATE = "2026-08-12"
+EXCESS_OBSERVATIONS = [
+    {"sent": 10, "billed": 10,
+     "how": "one model, one clip repeated, sent strictly one at a time"},
+    {"sent": 50, "billed": 52,
+     "how": "one model, fifty distinct clips, sent strictly one at a time"},
+    {"sent": 50, "billed": 59,
+     "how": "fifty clips to each of four models, back to back in one window"},
+]
 # Whisper tiny (English) is left off the free-tier chart. Its allowance is
 # hundreds of hours a day, which is off any scale the other three share.
 FREE_TIER_CHART_OMITS = ("whisper-tiny-en",)
@@ -241,23 +258,35 @@ def pending(*paragraphs):
 
 
 class Numbering:
-    """Sequential figure and table labels.
+    """Sequential figure and table labels, numbered in the order they are read.
 
-    A section that renders an empty state draws nothing and takes no number, so
-    the labels stay contiguous however much of the report has data behind it.
+    A label is written as a placeholder and resolve() numbers the placeholders as
+    they appear in the finished document, because the bodies are built in a
+    different order from the one the sections are laid out in. A section that
+    renders an empty state draws nothing and takes no number, so the labels stay
+    contiguous however much of the report has data behind it.
     """
 
-    def __init__(self):
-        self.figures = 0
-        self.tables = 0
+    FIGURE = "\x00figure\x00"
+    TABLE = "\x00table\x00"
+    NAMES = {FIGURE: "Figure", TABLE: "Table"}
 
     def figure(self):
-        self.figures += 1
-        return f"Figure {self.figures}"
+        return self.FIGURE
 
     def table(self):
-        self.tables += 1
-        return f"Table {self.tables}"
+        return self.TABLE
+
+    @classmethod
+    def resolve(cls, document):
+        counts = {cls.FIGURE: 0, cls.TABLE: 0}
+
+        def number(match):
+            token = match.group(0)
+            counts[token] += 1
+            return f"{cls.NAMES[token]} {counts[token]}"
+
+        return re.sub(f"{cls.FIGURE}|{cls.TABLE}", number, document)
 
 
 def per_minute(usd):
@@ -907,6 +936,61 @@ def silence_chart(data):
     return "".join(out)
 
 
+def excess_observations_html(numbering):
+    """The controlled sends, as counts rather than as a rate."""
+    rows = "".join(
+        f'<tr><td class="n">{row["sent"]}</td><td class="n">{row["billed"]}</td>'
+        f'<td class="n">{(row["billed"] - row["sent"]) / row["sent"]:+.0%}</td>'
+        f'<td>{esc(row["how"])}</td></tr>'
+        for row in EXCESS_OBSERVATIONS)
+    return (f'<figure class="tbl"><div class="tbl-scroll"><table class="data">'
+            f'<thead><tr><th class="n">Requests issued</th><th class="n">Billed</th>'
+            f'<th class="n">Excess</th><th>How they were sent</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table></div>'
+            f'<figcaption class="cap"><span class="lbl">{numbering.table()}</span>Sends of '
+            f'{EXCESS_CHECK_DATE} against the deployed worker, each read back from the '
+            f'<code>aiInferenceAdaptiveGroups</code> dataset over the minutes the send covered. '
+            f'Every request returned 200 and nothing retried on this side. The counts were stable '
+            f'across reads at 121, 182 and 242 seconds after the window closed, so the excess is '
+            f'not analytics still arriving.</figcaption></figure>')
+
+
+def excess_by_speed_html(path):
+    """P1's excess rate at each speed, and whether its ratio survives the comparison."""
+    if not path.exists():
+        return pending(
+            "The excess has not been compared across speeds, because P1 has not run. Until it "
+            "has, no billing ratio between speeds can be published: an excess rate that differs "
+            "between 1x and 3x would move that ratio by about the difference.",
+            "<code>python probe_billing.py --live</code> fills this in.")
+    data = json.loads(path.read_text())
+    comparison = data.get("billing_excess")
+    if not comparison:
+        return pending(
+            "This probe result was written before the excess was compared across speeds, so the "
+            "comparison that its ratio depends on is missing.",
+            "Re-run <code>python probe_billing.py --live</code> to measure it.")
+    rows = "".join(
+        f'<tr><td class="n">{bucket["speed"]:g}x</td>'
+        f'<td class="n">{bucket["requests_sent"]}</td>'
+        f'<td class="n">{bucket["requests_billed"]}</td>'
+        f'<td class="n">'
+        f'{"n/a" if bucket["excess_rate"] is None else f"{bucket['excess_rate']:+.1%}"}</td>'
+        f'<td class="n">{bucket["windows"]}</td></tr>'
+        for _, bucket in sorted(comparison["per_speed"].items(), key=lambda item: float(item[0])))
+    verdict = (f'<p class="lead {"ok" if comparison["comparable"] else "bad"}">'
+               f'{esc(comparison["statement"])}</p>')
+    note = ('<p class="none warn">Synthetic: these windows were generated by '
+            '<code>probe_billing.py --dry-run</code>, which bills exactly what it sends, so the '
+            'excess here is zero by construction and measures nothing.</p>'
+            ) if data.get("synthetic") else ""
+    return (f'{note}{verdict}'
+            f'<div class="tbl-scroll"><table class="data"><thead><tr><th class="n">Speed</th>'
+            f'<th class="n">Requests sent</th><th class="n">Requests billed</th>'
+            f'<th class="n">Excess</th><th class="n">Windows</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table></div>')
+
+
 def billing_probe_html(path, numbering):
     if not path.exists():
         return pending(
@@ -937,6 +1021,22 @@ def billing_probe_html(path, numbering):
     note = ('<p class="none warn">Synthetic: the billed side was generated from the durations that '
             'were sent, so this run proves the arithmetic, not the billing.</p>'
             ) if data.get("synthetic") else ""
+    # The ratio between two speeds is only a result when the platform's billing
+    # excess is the same at both, so a run that failed that comparison publishes
+    # its excess and withholds its ratio.
+    if data.get("ratio_trustworthy") is False:
+        comparison = data.get("billing_excess") or {}
+        return (f'<div class="notice"><span class="tag">No ratio published</span>'
+                f'<p>{esc(comparison.get("statement", ""))}</p>'
+                f'<p>Cloudflare billed a different share of extra inferences at each speed, and '
+                f'those extra inferences carry billed seconds. The billed-seconds ratio between '
+                f'the speeds would therefore be partly a measurement of the excess rather than of '
+                f'compression, so it is not shown and no proportionality verdict is given. These '
+                f'windows have to be re-measured.</p></div>'
+                f'<p class="none">{data["clips_per_window"]} clips per window at '
+                f'{", ".join(f"{s:g}x" for s in data["speeds"])}, '
+                f'{len(data["replicates"])} replicates. Observed analytics settle lag: '
+                f'{lag}.</p>{note}')
     return (f'<figure class="fig"><div class="chart">{billing_rate_chart(data)}</div>'
             f'<figcaption class="cap"><span class="lbl">{numbering.figure()}</span>Bands are the published '
             f'rate divided by r, widened to stay visible; the tolerance they stand for is '
@@ -1331,6 +1431,36 @@ def main():
         f'<h4>P2 · Is silence billed?</h4>'
         f'{silence_probe_html(cfg.SILENCE_PROBE_RESULT, numbering)}')
 
+    worst_excess = max((row["billed"] - row["sent"]) / row["sent"] for row in EXCESS_OBSERVATIONS)
+    excess_body = (
+        f'<p>Cloudflare bills more inference requests than this client issues. Sending a known '
+        f'number of requests to the worker and reading the account\'s own billing back for those '
+        f'minutes gives more inferences than were sent, and the gap grows with load: none at ten '
+        f'requests, {EXCESS_OBSERVATIONS[1]["billed"] - EXCESS_OBSERVATIONS[1]["sent"]} extra at '
+        f'fifty, and {EXCESS_OBSERVATIONS[2]["billed"] - EXCESS_OBSERVATIONS[2]["sent"]} extra on '
+        f'fifty sent alongside a hundred and fifty others, which is {worst_excess:.0%}.</p>'
+        f'{excess_observations_html(numbering)}'
+        f'<p>The billing behaviour above is measured. Why it happens is not. The explanation that '
+        f'fits all three rows is that Workers AI retries internally under capacity pressure and '
+        f'bills each attempt while the client sees one successful response, but that is a '
+        f'hypothesis about Cloudflare\'s internals and nothing here tests it. What was ruled out '
+        f'is on this side of the wire: the app was idle, the worker makes exactly one inference '
+        f'call per request, neither the probes nor the tests retry, and the counts did not move '
+        f'across three reads over four minutes.</p>'
+        f'<p><span class="lead">What it means for the usage counter.</span> The worker estimates '
+        f'what each transcription cost and that estimate feeds the usage counter, one count per '
+        f'request served. The bill has more requests in it than that. Anyone reading the '
+        f'counter as the bill is reading a figure that is low by a few percent in light use and '
+        f'by more under load, and the free daily allowance runs out earlier than the counter '
+        f'suggests. Every price in this report is per audio minute and is unaffected; what the '
+        f'excess moves is how many billed minutes there are.</p>'
+        f'<p><span class="lead">What it means for P1.</span> The probe compares billed seconds at '
+        f'one speed against another. Compressed clips are shorter and finish faster, so the '
+        f'excess rate need not be the same at both speeds, and a difference between them lands '
+        f'directly on the ratio. Each window therefore records its own excess and the probe '
+        f'compares the rates before reporting anything.</p>'
+        f'{excess_by_speed_html(cfg.BILLING_PROBE_RESULT)}')
+
     scope_body = (
         '<ul class="findings">'
         '<li><strong>Supports.</strong> A calibrated answer for read audiobook speech in studio '
@@ -1371,6 +1501,8 @@ def main():
          'the utterance\'s own baseline rate.</span></div>' + rate_body),
         ("breaking", "What breaking looks like", "Breaking", accuracy_chip, gallery_body),
         ("probes", "Billing probes", "Billing probes", None, probes_body),
+        ("excess", "The platform bills more inferences than the client sends", "Billing excess",
+         ("measured", True), excess_body),
         ("corpus", "What was actually transcribed", "Corpus", accuracy_chip, corpus_body),
         ("scope", "What this test set can and cannot support", "Scope", None, scope_body),
     ]
@@ -1432,7 +1564,7 @@ def main():
     # The cost half renders before any earlier stage has run, so this is the
     # first thing that may need the run directory to exist.
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(doc)
+    out_path.write_text(Numbering.resolve(doc))
     print(f"wrote {out_path}")
 
 
