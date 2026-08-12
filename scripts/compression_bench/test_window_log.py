@@ -21,16 +21,26 @@ import window_log
 SHAPE = window_log.billing_shape(200, ["nova-3", "whisper"])
 
 
-def checkpoint(key, synthetic=True, shape=None, measured_at="2026-08-12T09:00:00Z", settle=90.0):
-    return {
+def checkpoint(key, synthetic=True, shape=None, measured_at="2026-08-12T09:00:00Z", settle=90.0,
+               models=None, settled=None):
+    record = {
         "probe": "billing",
         "synthetic": synthetic,
         "window_key": key,
         "window_shape": SHAPE if shape is None else shape,
         "measured_at": measured_at,
         "settle_seconds_observed": settle,
-        "models": [],
+        "models": [] if models is None else models,
     }
+    if settled is not None:
+        record["settled"] = settled
+    return record
+
+
+def counts(*pairs):
+    """Model rows carrying only the two counts the completeness check reads."""
+    return [{"model": model, "requests_sent": sent, "requests_billed": billed}
+            for model, sent, billed in pairs]
 
 
 def write_log(directory, name, records):
@@ -61,13 +71,13 @@ class LoadWindows(unittest.TestCase):
     def test_a_missing_log_is_no_windows(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "billing.windows.dry-run.jsonl"
-            self.assertEqual(window_log.load_windows(path, True, SHAPE, other(path)), {})
+            self.assertEqual(window_log.load_windows(path, True, SHAPE, other(path)).measured, {})
 
     def test_completed_windows_come_back_keyed(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = write_log(tmp, "billing.windows.dry-run.jsonl",
                              [checkpoint("replicate1|1x"), checkpoint("replicate1|3x")])
-            measured = window_log.load_windows(path, True, SHAPE, other(path))
+            measured = window_log.load_windows(path, True, SHAPE, other(path)).measured
             self.assertEqual(set(measured), {"replicate1|1x", "replicate1|3x"})
 
     def test_a_dry_run_checkpoint_never_satisfies_a_live_run(self):
@@ -111,7 +121,7 @@ class LoadWindows(unittest.TestCase):
             path = write_log(tmp, "billing.windows.dry-run.jsonl", [checkpoint("replicate1|1x")])
             with open(path, "a") as handle:
                 handle.write(json.dumps(checkpoint("replicate1|3x"))[:120])
-            measured = window_log.load_windows(path, True, SHAPE, other(path))
+            measured = window_log.load_windows(path, True, SHAPE, other(path)).measured
             self.assertEqual(set(measured), {"replicate1|1x"})
 
     def test_a_re_measured_window_replaces_the_earlier_record(self):
@@ -120,7 +130,7 @@ class LoadWindows(unittest.TestCase):
                 checkpoint("replicate1|1x", measured_at="2026-08-12T09:00:00Z"),
                 checkpoint("replicate1|1x", measured_at="2026-08-13T09:00:00Z"),
             ])
-            measured = window_log.load_windows(path, True, SHAPE, other(path))
+            measured = window_log.load_windows(path, True, SHAPE, other(path)).measured
             self.assertEqual(measured["replicate1|1x"]["measured_at"], "2026-08-13T09:00:00Z")
 
 
@@ -129,10 +139,10 @@ class AppendWindow(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "probes" / "billing.windows.dry-run.jsonl"
             window_log.append_window(path, checkpoint("replicate1|1x"))
-            self.assertEqual(set(window_log.load_windows(path, True, SHAPE, other(path))),
+            self.assertEqual(set(window_log.load_windows(path, True, SHAPE, other(path)).measured),
                              {"replicate1|1x"})
             window_log.append_window(path, checkpoint("replicate1|3x"))
-            self.assertEqual(len(window_log.load_windows(path, True, SHAPE, other(path))), 2)
+            self.assertEqual(len(window_log.load_windows(path, True, SHAPE, other(path)).measured), 2)
 
 
 class ModePaths(unittest.TestCase):
@@ -217,9 +227,10 @@ class ScheduleWithCompletedWindows(unittest.TestCase):
         lines = self.schedule(completed={0, 2}).plan_lines()
         self.assertIn("2 measurement windows still to run", lines[0])
         self.assertIn("2 of 4 already measured", lines[0])
-        self.assertIn("window 1 of 4: w0, already measured", lines[3])
-        self.assertIn("window 2 of 4: w1,", lines[4])
-        self.assertNotIn("already measured", lines[4])
+        listing = lines[quiet.QuietSchedule.HEADER_LINES:]
+        self.assertIn("window 1 of 4: w0, already measured", listing[0])
+        self.assertIn("window 2 of 4: w1,", listing[1])
+        self.assertNotIn("already measured", listing[1])
 
     def test_a_closing_block_points_past_the_windows_already_measured(self):
         schedule = self.schedule(completed={1, 2})

@@ -63,7 +63,7 @@ Only inside a probe's measurement windows, and the run tells you when each one s
 
 `run.py`, the main grid, records cost and duration from each response individually. No other traffic on the account can affect it, so dictate freely for the whole of that stage. The probes are different: they read account-level analytics filtered to the four speech models and the Workers-binding request source, which is the exact path the dictation app's own requests take. Anything dictated inside a measurement window is counted into that window and silently corrupts it.
 
-Today's configuration opens 11 measurement windows: 3 replicates at 2 speeds for P1, and 5 paddings for P2. Each window costs its send time plus a settle that polls once a minute until two consecutive reads agree, capped at 30 minutes. That puts the quiet total between about 1 h 20 min and about 6 h 50 min. The runner prints the range, and each window's own share, before you commit to anything; once real settle times have been measured the estimate for the windows still to come is recomputed from them instead of the assumed bracket.
+Today's configuration opens 11 measurement windows: 3 replicates at 2 speeds for P1, and 5 paddings for P2. Each window costs its send time, then the longer of its settle and the gap held before the next window may open. The settle polls once a minute until every model's billed request count equals what that window sent, capped at 30 minutes; the gap is at least 3 minutes, measured from the window's own end. The runner prints the range, and each window's own share, before you commit to anything; once real settle times have been measured the estimate for the windows still to come is recomputed from them instead of the assumed bracket.
 
 You do not have to sit through that in one block. Windows are checkpointed as they complete, so the 11 are split across as many sittings as you like, and the estimate counts only the windows still to run.
 
@@ -112,6 +112,7 @@ A probe's unit of resume is one measurement window: a batch sent, a settle waite
 - **Each window records when it was measured.** The result file carries `measured_at` per window and a `measurement_span` over all of them, so a run split across days shows the gap, which is a possible source of drift.
 - **A checkpoint from one mode never satisfies the other.** Each mode owns its own checkpoint file, and every record is checked against the mode before anything is skipped, the same guard the grid's response log uses.
 - **A checkpoint from a differently shaped batch is refused.** Each record carries the clip count, the models and the speech length its window sent. Change those and the run stops rather than comparing windows that measured different things.
+- **A checkpoint the analytics never fully accounted for is refused.** A window counts only when every model's billed request count equals what it sent. One that does not is held out of the measured set, named with its per-model counts, and re-measured.
 
 `--max-windows N` on either probe measures at most N more windows and then stops cleanly, leaving the rest for a later run.
 
@@ -126,8 +127,28 @@ Cost in the report is arithmetic on the published rates. Two probes are what kee
 Three facts about the analytics shape both probes:
 
 - `totalAudioSeconds` is available, so billed duration is read directly rather than inferred from neurons. `totalNeurons` is kept as a cross-check.
-- The settle lag is measured, not assumed. Each window is polled at minute granularity until consecutive reads agree, and the observed lag is reported.
+- The settle is on completeness, and the lag is measured rather than assumed. See below.
 - Windows are isolated by three filters together: the four speech model ids, `requestSource` = `unknown` (what a Worker AI binding reports, as against `rest api` for direct calls), and the minute range. The `tag` dimension is empty on every record in this account and cannot be used. Only dictation has to stop during a window, not all account AI traffic.
+
+### The settle, and why it is on completeness
+
+A probe knows exactly how many requests each model sent in a window. That count is the invariant, and it is what the settle waits for: each window is polled at minute granularity until every model's billed request count equals what that window sent, then over one further read to confirm, so a count that matches once while data is still moving is not mistaken for the end.
+
+Stability is not a substitute for it, and treating it as one is what a live P1 run of 2026-08-12 proved. Account analytics stay unchanged for a whole poll interval while records are still arriving, so a read showing 3 of one model's 50 requests is exactly as stable as a finished one. Four windows were checkpointed off two agreeing reads and none of them accounted for its own traffic: 46 and 43 of 50, then 59, 37 and 3 of 50, then 51 of 50. The audio-seconds ratio is the probe's entire output and every one of those ratios is meaningless. One of them would have been published as nova-3 billing 1.57x what was sent at 3x.
+
+- **A count below what was sent** means this window's own traffic had not all arrived.
+- **A count above what was sent** means another window's traffic is inside this window's range.
+- **Either way the window is not a measurement.** Reaching the 30 minute cap without completeness records the window as failed, with its per-model shortfall, and leaves it out of the measured set so it is re-measured rather than scored. A wrong number that looks fine is the failure this rule exists to remove.
+
+The reported settle is what was observed: seconds from the window's own end to the first read that accounted for every request, alongside the read that confirmed it. No inference about when the data *became* stable is reported as though it were a measurement.
+
+### The gap between windows
+
+Consecutive windows are held apart, measured from the closing window's end, so one window's analytics lag tail cannot land inside the next window's range. The floor is 3 minutes, comfortably above the worst lag the live run observed at 129 s; once settles have been measured the gap is derived from the worst of them and never drops below the floor. The same live run opened its windows a minute apart, which is the direct explanation for a window billing 59 of the 50 requests it sent right after a neighbouring batch.
+
+### Windows already on disk whose counts never matched
+
+A checkpoint counts as a measurement only when every model's billed count equals what its window sent, and that is read from the counts in the record itself, so a window written before this check existed is classified the same way. A window that fails it is refused, named with its per-model counts, and reported with the command that re-measures it. Re-running the identical probe command measures exactly those windows and the new record supersedes the corrupt one under the same key; every window whose counts did match is still skipped. No result is written while any window is corrupt, so nothing is scored from one.
 
 The per-minute rates the worker publishes are already confirmed against this account's historical analytics, so neither probe needs to establish them.
 
@@ -165,6 +186,6 @@ The probes are separately authorised and separately paid:
 
 ## Tests
 
-The mode split and the grid's resume log are covered by `test_response_log.py`. The quiet-window banners, the quiet-time estimate, the stage selection and the typed confirmation are covered by `test_run_plan.py`. The probes' per-window checkpoints, their resume, the window budget and the runner's shrinking plan are covered by `test_window_log.py`. The model catalogue and the cost arithmetic built on it are covered by `test_catalogue.py`. The report's two halves are covered by `test_report.py`: that every cost figure is the catalogue's own arithmetic, and that no accuracy section renders a number, a chart or a figure label without a results file behind it. All five use the standard library's `unittest`, open no socket, and need no dependency beyond `requirements.txt`. From `scripts/compression_bench/`:
+The mode split and the grid's resume log are covered by `test_response_log.py`. The quiet-window banners, the quiet-time estimate, the stage selection and the typed confirmation are covered by `test_run_plan.py`. The probes' per-window checkpoints, their resume, the window budget and the runner's shrinking plan are covered by `test_window_log.py`. The settle rule, the gap between windows and the recovery from the windows the live run corrupted are covered by `test_probe_settle.py`, over the counts that run actually wrote. The model catalogue and the cost arithmetic built on it are covered by `test_catalogue.py`. The report's two halves are covered by `test_report.py`: that every cost figure is the catalogue's own arithmetic, and that no accuracy section renders a number, a chart or a figure label without a results file behind it. All six use the standard library's `unittest`, open no socket, and need no dependency beyond `requirements.txt`. From `scripts/compression_bench/`:
 
-    ../../runs/compression-bench/.venv/bin/python -m unittest test_response_log test_run_plan test_window_log test_catalogue test_report -v
+    ../../runs/compression-bench/.venv/bin/python -m unittest test_response_log test_run_plan test_window_log test_probe_settle test_catalogue test_report -v

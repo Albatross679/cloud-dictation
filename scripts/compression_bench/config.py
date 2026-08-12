@@ -139,10 +139,13 @@ query BilledInference($account: String!, $start: Time!, $end: Time!,
 }
 """
 
-# Analytics settle after a lag that is measured rather than assumed: a window is
-# polled at minute granularity until consecutive reads agree.
+# Analytics settle after a lag that is measured rather than assumed. A window is
+# polled at minute granularity until every model's billed request count equals what
+# that window sent, and ANALYTICS_SETTLE_COMPLETE_READS says how many consecutive
+# reads must show that before the window is taken as finished. A window that
+# reaches the timeout without it is recorded as failed and re-measured.
 ANALYTICS_POLL_INTERVAL_S = 60
-ANALYTICS_SETTLE_AGREEMENTS = 2
+ANALYTICS_SETTLE_COMPLETE_READS = 2
 ANALYTICS_SETTLE_TIMEOUT_S = 1800
 
 # Probe P1 asks whether billed audio seconds fall proportionally when the same

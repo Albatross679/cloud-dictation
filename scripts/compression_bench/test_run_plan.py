@@ -101,12 +101,12 @@ class Estimate(unittest.TestCase):
     def test_a_window_costs_its_send_time_plus_the_settle_bracket(self):
         schedule = quiet.QuietSchedule([window(requests=10, audio_seconds=100.0)])
         send = 10 * quiet.REQUEST_OVERHEAD_S + 100.0 * quiet.REQUEST_PER_AUDIO_SECOND_S
+        settle_low = cfg.ANALYTICS_POLL_INTERVAL_S * (cfg.ANALYTICS_SETTLE_COMPLETE_READS - 1)
         low, high = schedule.window_range(0)
-        self.assertAlmostEqual(low, send + quiet.BOUNDARY_HOLD_MIN_S
-                               + cfg.ANALYTICS_POLL_INTERVAL_S
-                               * (cfg.ANALYTICS_SETTLE_AGREEMENTS - 1))
-        self.assertAlmostEqual(high, send + quiet.BOUNDARY_HOLD_MAX_S
-                               + cfg.ANALYTICS_SETTLE_TIMEOUT_S)
+        self.assertAlmostEqual(low, send + max(settle_low, quiet.boundary_hold_seconds()))
+        self.assertAlmostEqual(high, send + quiet.MINUTE_RESIDUAL_MAX_S
+                               + max(cfg.ANALYTICS_SETTLE_TIMEOUT_S,
+                                     quiet.boundary_hold_seconds()))
 
     def test_the_total_is_the_sum_over_every_window(self):
         schedule = quiet.QuietSchedule([window(), window(), window()])

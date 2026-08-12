@@ -30,10 +30,31 @@ import config as cfg
 REQUEST_OVERHEAD_S = 0.30
 REQUEST_PER_AUDIO_SECOND_S = 0.09
 
-# A window closes on a minute boundary, so the probe holds for whatever is left
-# of the current minute before it may read the window back.
-BOUNDARY_HOLD_MIN_S = 0.0
-BOUNDARY_HOLD_MAX_S = 60.0
+# A window closes on a minute boundary, so the probe holds for whatever is left of
+# the current minute before it may read the window back. That wait is between
+# nothing and a whole minute.
+MINUTE_RESIDUAL_MAX_S = 60.0
+
+# Floor on the gap held between one window closing and the next one opening,
+# measured from the closing window's end. A live P1 run saw a window's analytics
+# still arriving 129 s after it closed while its neighbours were opened a minute
+# apart, which counted one window's traffic inside another's range. The floor sits
+# comfortably above that worst observed lag.
+BOUNDARY_HOLD_FLOOR_S = 180.0
+
+# Multiple of the worst settle measured so far, used as the gap once any window has
+# been measured. Settles are timed from a window's own end and never include the
+# gap, so the two do not feed each other.
+BOUNDARY_HOLD_SETTLE_MULTIPLE = 1.5
+
+
+def boundary_hold_seconds(observed_settles=()):
+    """Seconds one window's end and the next window's start must be apart."""
+    observed = [float(s) for s in observed_settles if s is not None]
+    if observed:
+        return max(BOUNDARY_HOLD_FLOOR_S, BOUNDARY_HOLD_SETTLE_MULTIPLE * max(observed))
+    return BOUNDARY_HOLD_FLOOR_S
+
 
 QUIET_RULE = "#"
 SAFE_RULE = "-"
@@ -202,15 +223,20 @@ class QuietSchedule:
         """Low and high settle seconds per window, measured when anything has been."""
         if self.observed_settles:
             return min(self.observed_settles), max(self.observed_settles)
-        return (cfg.ANALYTICS_POLL_INTERVAL_S * (cfg.ANALYTICS_SETTLE_AGREEMENTS - 1),
+        return (cfg.ANALYTICS_POLL_INTERVAL_S * (cfg.ANALYTICS_SETTLE_COMPLETE_READS - 1),
                 float(cfg.ANALYTICS_SETTLE_TIMEOUT_S))
 
     def window_range(self, index):
-        """Low and high quiet seconds for one window."""
+        """Low and high quiet seconds for one window.
+
+        A window costs its send, whatever is left of its last minute, and then the
+        longer of its settle and the gap held before the next window may open.
+        """
         settle_low, settle_high = self.settle_bracket()
+        hold = boundary_hold_seconds(self.observed_settles)
         send = self.windows[index].send_seconds
-        return (send + BOUNDARY_HOLD_MIN_S + settle_low,
-                send + BOUNDARY_HOLD_MAX_S + settle_high)
+        return (send + max(settle_low, hold),
+                send + MINUTE_RESIDUAL_MAX_S + max(settle_high, hold))
 
     def range_from(self, index):
         """Low and high quiet seconds over the windows from `index` onwards.
@@ -241,8 +267,11 @@ class QuietSchedule:
             return (f"the estimate is refined from {measured} measured settle "
                     f"{'time' if measured == 1 else 'times'}")
         return (f"the estimate assumes a settle between "
-                f"{format_duration(cfg.ANALYTICS_POLL_INTERVAL_S * (cfg.ANALYTICS_SETTLE_AGREEMENTS - 1))} "
+                f"{format_duration(cfg.ANALYTICS_POLL_INTERVAL_S * (cfg.ANALYTICS_SETTLE_COMPLETE_READS - 1))} "
                 f"and the {format_duration(cfg.ANALYTICS_SETTLE_TIMEOUT_S)} cap")
+
+    # Lines plan_lines() writes before the per-window listing starts.
+    HEADER_LINES = 4
 
     def plan_lines(self):
         """The quiet part of the plan the runner prints before spending anything."""
@@ -252,10 +281,15 @@ class QuietSchedule:
         headline = f"{len(remaining)} measurement windows still to run"
         if measured:
             headline += f", {measured} of {len(self.windows)} already measured"
+        # print_plan reprints everything from HEADER_LINES on, so a line added to
+        # the block above has to move that count with it.
         lines = [
             f"{headline}, {sum(self.windows[i].requests for i in remaining)} requests inside them",
             f"do not dictate for {format_range(low, high)} in total, split across those windows",
             self.basis(),
+            f"consecutive windows are held "
+            f"{format_duration(boundary_hold_seconds(self.observed_settles))} apart, so one "
+            f"window's analytics lag cannot land inside the next window's range",
         ]
         for index, window in enumerate(self.windows):
             if index in self.completed:
