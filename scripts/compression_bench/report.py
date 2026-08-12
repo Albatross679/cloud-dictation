@@ -1,4 +1,8 @@
-"""Stage 5: render runs/compression-bench/report.html from results.json.
+"""Stage 5: render one mode's report from that mode's results file.
+
+--live renders results.json into report.html, --dry-run renders
+results.dry-run.json into report.dry-run.html, and a results file scored from the
+other mode's responses stops the run.
 
 Sections in order: verdict, degradation curve, cost-accuracy frontier, the full
 grid, error against effective speaking rate, what breaking looks like, the two
@@ -16,6 +20,7 @@ import json
 import math
 
 import config as cfg
+import response_log
 
 SERIES = {
     "nova-3": "#7c3043",
@@ -719,15 +724,22 @@ def silence_probe_html(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true",
+                      help="render the results of a dry run")
+    mode.add_argument("--live", action="store_true",
+                      help="render the results of a live run")
     parser.add_argument("--results", default=None)
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
 
-    results_path = cfg.RUN_DIR / args.results if args.results else cfg.RESULTS
-    out_path = cfg.RUN_DIR / args.out if args.out else cfg.REPORT
+    results_path = cfg.RUN_DIR / args.results if args.results else cfg.results_path(args.dry_run)
+    out_path = cfg.RUN_DIR / args.out if args.out else cfg.report_path(args.dry_run)
     if not results_path.exists():
-        raise SystemExit(f"missing {results_path}; run score.py first")
+        stage = "score.py --dry-run" if args.dry_run else "score.py --live"
+        raise SystemExit(f"missing {results_path}; run {stage} first")
     results = json.loads(results_path.read_text())
+    response_log.verify_results(results_path, args.dry_run, results)
     grid, corpus = results["grid"], results["corpus"]
     if not grid:
         raise SystemExit(f"{results_path} holds no scored cells")

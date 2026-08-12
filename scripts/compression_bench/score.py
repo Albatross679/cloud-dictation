@@ -1,4 +1,9 @@
-"""Stage 4: score the responses and write runs/compression-bench/results.json.
+"""Stage 4: score the responses of one mode and write that mode's results file.
+
+The mode is explicit and matches stage 3: --dry-run reads responses.dry-run.jsonl
+and writes results.dry-run.json, --live reads responses.jsonl and writes
+results.json. A log holding responses from the other mode stops the run, so a
+results file is always scored from one kind of response.
 
 Reference and hypothesis pass through the same Whisper English normalizer
 before jiwer measures them, which is the protocol the Open ASR Leaderboard uses
@@ -19,6 +24,7 @@ from jiwer import process_words
 from whisper_normalizer.english import EnglishTextNormalizer
 
 import config as cfg
+import response_log
 
 normalize = EnglishTextNormalizer()
 
@@ -98,14 +104,23 @@ def histogram_bins(values, step=10):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--responses", default=None, help="override the response log path")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true",
+                      help="score the synthesised responses of a dry run")
+    mode.add_argument("--live", action="store_true",
+                      help="score the measured responses of a live run")
+    parser.add_argument("--responses", default=None,
+                        help="override the response log path; it is still checked against the mode")
     parser.add_argument("--out", default=None, help="override the results path")
     args = parser.parse_args()
 
-    responses_path = cfg.RUN_DIR / args.responses if args.responses else cfg.RESPONSES
-    results_path = cfg.RUN_DIR / args.out if args.out else cfg.RESULTS
+    responses_path = (cfg.RUN_DIR / args.responses if args.responses
+                      else cfg.responses_path(args.dry_run))
+    results_path = cfg.RUN_DIR / args.out if args.out else cfg.results_path(args.dry_run)
     if not responses_path.exists():
-        raise SystemExit(f"missing {responses_path}; run run.py first")
+        stage = "run.py --dry-run" if args.dry_run else "run.py --live"
+        raise SystemExit(f"missing {responses_path}; run {stage} first")
+    responses = response_log.verify_responses(responses_path, args.dry_run)
 
     manifest = {}
     with open(cfg.MANIFEST) as handle:
@@ -119,23 +134,21 @@ def main():
     failures = 0
     synthetic = 0
     total = 0
-    with open(responses_path) as handle:
-        for line in handle:
-            response = json.loads(line)
-            if not response.get("ok"):
-                failures += 1
-                continue
-            total += 1
-            synthetic += 1 if response.get("synthetic") else 0
-            reference = manifest[response["utt_id"]]["reference"]
-            cell = score_cell(reference, response.get("text", ""))
-            if cell is None:
-                continue
-            cell["wpm_effective"] = response["wpm_effective"]
-            scored[response["model"]].setdefault(response["utt_id"], {})[response["speed"]] = cell
-            texts[(response["model"], response["utt_id"], response["speed"])] = response.get("text", "")
-            if response.get("transcribe_ms") is not None:
-                latency[(response["model"], response["speed"])].append(response["transcribe_ms"])
+    for response in responses:
+        if not response.get("ok"):
+            failures += 1
+            continue
+        total += 1
+        synthetic += 1 if response.get("synthetic") else 0
+        reference = manifest[response["utt_id"]]["reference"]
+        cell = score_cell(reference, response.get("text", ""))
+        if cell is None:
+            continue
+        cell["wpm_effective"] = response["wpm_effective"]
+        scored[response["model"]].setdefault(response["utt_id"], {})[response["speed"]] = cell
+        texts[(response["model"], response["utt_id"], response["speed"])] = response.get("text", "")
+        if response.get("transcribe_ms") is not None:
+            latency[(response["model"], response["speed"])].append(response["transcribe_ms"])
 
     rng = np.random.default_rng(cfg.BOOTSTRAP_SEED)
     grid = []
@@ -277,6 +290,7 @@ def main():
         "failures": failures,
         "responses": total,
         "synthetic": synthetic,
+        "mode": "dry-run" if args.dry_run else "live",
     }
     results_path.write_text(json.dumps(results, indent=2))
 
