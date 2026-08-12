@@ -465,13 +465,18 @@ def gallery_html(gallery):
     blocks = []
     for item in gallery:
         flag = ' <span class="warn">repetition loop</span>' if item["loop"] else ""
-        hypothesis = item["hypothesis"].strip() or "(empty transcript)"
+        # LibriSpeech stores its references in block capitals. The Whisper
+        # normalizer lowercases both sides before jiwer sees them, so lowercasing
+        # here shows the pair as it was actually compared. The stored data keeps
+        # the raw casing.
+        reference = item["reference"].lower()
+        hypothesis = item["hypothesis"].strip().lower() or "(empty transcript)"
         blocks.append(
             f'<div class="example"><h4>{esc(label_of(item["model"]))} at {item["speed"]:g}x '
             f'<span class="bad">{item["wer"]:.0f}% WER</span>{flag}</h4>'
             f'<p class="none">{esc(item["utt_id"])}</p>'
             f'<div class="pair"><div><div class="who">reference</div>'
-            f'<div class="txt">{esc(item["reference"])}</div></div>'
+            f'<div class="txt">{esc(reference)}</div></div>'
             f'<div><div class="who">transcript</div>'
             f'<div class="txt hyp">{esc(hypothesis)}</div></div></div></div>'
         )
