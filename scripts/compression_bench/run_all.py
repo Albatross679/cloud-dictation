@@ -77,9 +77,9 @@ def grid_stage(dry_run, models, speeds):
         if grid.cell_key({"utt_id": c[0]["utt_id"], "speed": c[0]["speed"], "model": c[1]}) not in done
     ]
     cost = sum(
-        variant["duration_s"] / 60 * cfg.MODELS[model_key]["neurons_per_audio_minute"]
+        variant["duration_s"] / 60 * cfg.usd_per_audio_minute(model_key)
         for variant, model_key in pending
-    ) * cfg.USD_PER_1000_NEURONS / 1000
+    )
     return Stage(
         "grid",
         "Main grid, no quiet needed: dictate freely for this whole stage",
@@ -140,14 +140,14 @@ def probe_stages(dry_run, models, schedules):
     silence_requests = sum(w.requests for w in silence.windows)
     billing_cost = sum(
         w.audio_seconds / len(models) / 60 * sum(
-            cfg.MODELS[m]["neurons_per_audio_minute"] for m in models)
+            cfg.usd_per_audio_minute(m) for m in models)
         for w in billing.windows
-    ) * cfg.USD_PER_1000_NEURONS / 1000
+    )
     silence_cost = sum(
         w.audio_seconds / len(models) / 60 * sum(
-            cfg.MODELS[m]["neurons_per_audio_minute"] for m in models)
+            cfg.usd_per_audio_minute(m) for m in models)
         for w in silence.windows
-    ) * cfg.USD_PER_1000_NEURONS / 1000
+    )
     return [
         Stage(
             "probe_billing",
@@ -328,6 +328,7 @@ def main():
     if not cfg.VARIANTS.exists():
         raise SystemExit(f"missing {cfg.VARIANTS}; run prepare_corpus.py and compress.py first")
 
+    cfg.catalogue()
     schedules = build_schedules(args.models)
     keys = selected_stage_keys(sys.argv[1:])
     available = {}

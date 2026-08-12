@@ -454,7 +454,7 @@ def verdict_text(results):
         row = next(r for r in results["grid"] if r["model"] == model_key and r["speed"] == speed)
         lines.append(
             f"{label} holds to {speed:g}x for {row['saving_pct']:.0f}% off, "
-            f"at +{row['delta_wer']:.1f} points and "
+            f"at {row['delta_wer']:+.1f} points and "
             f"{row['free_minutes_per_day']:.0f} free minutes a day."
         )
     return lines or ["No model produced a scored baseline, so there is no verdict to give."]
@@ -489,11 +489,13 @@ def gallery_html(gallery):
 
 
 def measured_rates(data):
-    """Billed neurons per minute of real speech, per model and speed.
+    """Billed USD per minute of real speech, per model and speed.
 
     A file compressed by r holds 1/r of the real speech it came from, so the
-    quantity the cost argument rests on is neurons per minute of speech as
-    spoken, not per minute of file.
+    quantity the cost argument rests on is cost per minute of speech as spoken,
+    not per minute of file. Billed seconds are what the probe read back from
+    analytics; the worker's published price per audio minute turns them into
+    money.
     """
     measured = {}
     for replicate in data["replicates"]:
@@ -503,8 +505,9 @@ def measured_rates(data):
                 real_minutes = row["audio_seconds_sent"] * speed / 60
                 if not real_minutes:
                     continue
+                billed_usd = row["audio_seconds_billed"] / 60 * cfg.usd_per_audio_minute(row["model"])
                 measured.setdefault((row["model"], speed), []).append(
-                    row["neurons_billed"] / real_minutes)
+                    billed_usd / real_minutes)
     return {key: sum(values) / len(values) for key, values in measured.items()}
 
 
@@ -524,7 +527,7 @@ def billing_rate_chart(data):
     tol = data.get("tolerance", 0.02)
     W, H, ml, mr, mt, mb = 900, 380, 68, 200, 22, 50
     iw, ih = W - ml - mr, H - mt - mb
-    predicted = {(m, s): cfg.MODELS[m]["neurons_per_audio_minute"] / s
+    predicted = {(m, s): cfg.usd_per_audio_minute(m) / s
                  for m in models for s in speeds}
     values = list(predicted.values()) + list(measured.values())
     lo, hi = math.log10(min(values) * 0.5), math.log10(max(values) * 2.0)
@@ -533,13 +536,13 @@ def billing_rate_chart(data):
     fy = lambda v: mt + ih - (math.log10(v) - lo) / (hi - lo) * ih
 
     out = [f'<svg viewBox="0 0 {W} {H}" role="img" '
-           f'aria-label="billed neurons per minute of real speech against compression factor">']
+           f'aria-label="billed USD per minute of real speech against compression factor">']
     decade = math.floor(lo)
     while decade <= hi:
         v = 10 ** decade
         if lo <= math.log10(v) <= hi:
             out.append(f'<line class="grid-line" x1="{ml}" x2="{ml+iw}" y1="{fy(v):.1f}" y2="{fy(v):.1f}"/>')
-            out.append(f'<text class="tick" x="{ml-8}" y="{fy(v)+4:.1f}" text-anchor="end">{v:g}</text>')
+            out.append(f'<text class="tick" x="{ml-8}" y="{fy(v)+4:.1f}" text-anchor="end">${v:g}</text>')
         decade += 1
     for s in speeds:
         out.append(f'<text class="tick" x="{fx(s):.1f}" y="{mt+ih+20}" text-anchor="middle">{s:g}x</text>')
@@ -572,7 +575,7 @@ def billing_rate_chart(data):
     out.append(f'<text class="axis" x="{ml+iw/2:.0f}" y="{H-8}" text-anchor="middle">'
                f'compression factor r</text>')
     out.append(f'<text class="axis" x="16" y="{mt+ih/2:.0f}" text-anchor="middle" '
-               f'transform="rotate(-90 16 {mt+ih/2:.0f})">neurons per minute of real speech, log scale</text>')
+               f'transform="rotate(-90 16 {mt+ih/2:.0f})">USD per minute of real speech, log scale</text>')
     out.append("</svg>")
     return "".join(out)
 
@@ -733,6 +736,7 @@ def main():
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
 
+    catalogue = cfg.catalogue()
     results_path = cfg.RUN_DIR / args.results if args.results else cfg.results_path(args.dry_run)
     out_path = cfg.RUN_DIR / args.out if args.out else cfg.report_path(args.dry_run)
     if not results_path.exists():
@@ -805,6 +809,13 @@ def main():
                   f'<p>{results["synthetic"]} of {results["responses"]} responses were synthesised '
                   f'by <code>run.py --dry-run</code>. Every accuracy number below is the shape of '
                   f'the pipeline, not a measurement of any model.</p></div>')
+    if catalogue.from_cache:
+        banner += (f'<div class="notice"><span class="tag">Stale rates</span>'
+                   f'<p>The worker could not be reached ({esc(str(catalogue.unreachable))}), so '
+                   f'every price and free-tier figure below comes from the catalogue cached at '
+                   f'<code>{esc(str(catalogue.cache_path))}</code>, fetched '
+                   f'{esc(catalogue.fetched_at)}. Re-run against the worker before quoting a '
+                   f'cost.</p></div>')
 
     doc = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -918,7 +929,8 @@ cancels.</li>
 </ul>
 
 <p class="project-meta" style="margin-top:2.4rem">Generated from
-<code>{esc(results_path.name)}</code>. Rates from <code>src/core/models.js</code>.
+<code>{esc(results_path.name)}</code>. Rates from the worker's <code>/models</code> catalogue,
+{"cached copy, " if catalogue.from_cache else ""}fetched {esc(catalogue.fetched_at)}.
 {esc(results["failures"])} failed responses excluded.</p>
 </main></body></html>"""
 
