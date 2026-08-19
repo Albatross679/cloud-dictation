@@ -118,6 +118,131 @@ struct CloudflareClient {
     }
 }
 
+/// AVAudioPlayerNode invokes its completion handler from the render thread.
+/// This small lock makes that signal safe to inspect from the upload task.
+private final class CloudflarePlaybackCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didComplete = false
+
+    func finish() {
+        lock.lock()
+        didComplete = true
+        lock.unlock()
+    }
+
+    var isComplete: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return didComplete
+    }
+}
+
+/// Produces a pitch-preserving, time-compressed WAV for cloud upload only.
+/// The recorder's file is never changed: callers own and delete the copy.
+private enum CloudflareAudioCompressor {
+    enum CompressionError: LocalizedError {
+        case invalidRate(Double)
+        case noAudioProduced
+        case stalledRender
+
+        var errorDescription: String? {
+            switch self {
+            case let .invalidRate(rate):
+                return "Invalid Cloudflare audio speed: \(rate)"
+            case .noAudioProduced:
+                return "Audio speed conversion produced no audio"
+            case .stalledRender:
+                return "Audio speed conversion stopped rendering"
+            }
+        }
+    }
+
+    static func compressForUpload(source: URL, rate: Double) throws -> URL {
+        guard rate > 1 else { return source }
+        guard rate <= 3 else { throw CompressionError.invalidRate(rate) }
+
+        let inputFile = try AVAudioFile(forReading: source)
+        guard inputFile.length > 0 else { throw CompressionError.noAudioProduced }
+
+        let engine = AVAudioEngine()
+        let player = AVAudioPlayerNode()
+        let timePitch = AVAudioUnitTimePitch()
+        timePitch.rate = Float(rate)
+        engine.attach(player)
+        engine.attach(timePitch)
+        engine.connect(player, to: timePitch, format: inputFile.processingFormat)
+        engine.connect(timePitch, to: engine.mainMixerNode, format: inputFile.processingFormat)
+
+        try engine.enableManualRenderingMode(
+            .offline,
+            format: inputFile.processingFormat,
+            maximumFrameCount: 4_096
+        )
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cloud-dictation-\(UUID().uuidString)")
+            .appendingPathExtension("wav")
+        var completed = false
+        defer {
+            if !completed {
+                try? FileManager.default.removeItem(at: destination)
+            }
+        }
+        let outputFile = try AVAudioFile(
+            forWriting: destination,
+            settings: engine.manualRenderingFormat.settings,
+            commonFormat: engine.manualRenderingFormat.commonFormat,
+            interleaved: engine.manualRenderingFormat.isInterleaved
+        )
+        let buffer = AVAudioPCMBuffer(
+            pcmFormat: engine.manualRenderingFormat,
+            frameCapacity: engine.manualRenderingMaximumFrameCount
+        )!
+
+        engine.prepare()
+        try engine.start()
+        let playbackCompletion = CloudflarePlaybackCompletion()
+        player.scheduleFile(inputFile, at: nil, completionCallbackType: .dataRendered) { _ in
+            playbackCompletion.finish()
+        }
+        player.play()
+
+        // The offline renderer completes its final block with a little zero
+        // padding. Limit the file to the mathematical duration so billing
+        // follows the selected speed rather than the renderer's block size.
+        let expectedFrameCount = AVAudioFrameCount(
+            (Double(inputFile.length) / rate).rounded(.up)
+        )
+        var framesWritten: AVAudioFrameCount = 0
+        var stalledRenders = 0
+        while !playbackCompletion.isComplete {
+            switch try engine.renderOffline(engine.manualRenderingMaximumFrameCount, to: buffer) {
+            case .success:
+                stalledRenders = 0
+                let remainingFrames = expectedFrameCount - framesWritten
+                if buffer.frameLength > 0, remainingFrames > 0 {
+                    buffer.frameLength = min(buffer.frameLength, remainingFrames)
+                    try outputFile.write(from: buffer)
+                    framesWritten += buffer.frameLength
+                }
+            case .insufficientDataFromInputNode, .cannotDoInCurrentContext:
+                stalledRenders += 1
+                if stalledRenders > 100 { throw CompressionError.stalledRender }
+            case .error:
+                throw CompressionError.noAudioProduced
+            @unknown default:
+                throw CompressionError.noAudioProduced
+            }
+        }
+        engine.stop()
+
+        guard framesWritten == expectedFrameCount else {
+            throw CompressionError.noAudioProduced
+        }
+        completed = true
+        return destination
+    }
+}
+
 /// Transcribes through a Cloudflare Worker backed by Workers AI.
 /// Audio never touches a local model: the recorded WAV is uploaded and the
 /// worker returns the finished text.
@@ -161,8 +286,30 @@ class CloudflareEngine: TranscriptionEngine {
         startHeartbeat()
         defer { stopHeartbeat() }
 
+        let rate = AppPreferences.shared.cloudflareCompressionRate
+        let uploadURL: URL
+        if rate > 1 {
+            do {
+                uploadURL = try CloudflareAudioCompressor.compressForUpload(source: url, rate: rate)
+            } catch {
+                // Dictation should still work if AVFoundation cannot render a
+                // particular recording. Keep the original for history and send
+                // it down the exact upload path used before compression existed.
+                print("Cloudflare audio compression failed at \(rate)x: \(error.localizedDescription). Uploading original audio.")
+                uploadURL = url
+            }
+        } else {
+            // 1x is deliberately byte-path-identical to the historical upload.
+            uploadURL = url
+        }
+        defer {
+            if uploadURL != url {
+                try? FileManager.default.removeItem(at: uploadURL)
+            }
+        }
+
         let task = Task { () throws -> String in
-            try await Self.client.transcribe(fileURL: url, query: Self.query(settings: settings))
+            try await Self.client.transcribe(fileURL: uploadURL, query: Self.query(settings: settings))
         }
 
         uploadTask = task
