@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "./scripts/test_client.sh",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev --remote",
     "tail": "wrangler tail"

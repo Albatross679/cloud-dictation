@@ -68,6 +68,7 @@ def clone() -> None:
 def add_engine_file() -> None:
     for name, subdir in (
         ("CloudflareEngine.swift", "Engines"),
+        ("CloudflareDirectRequest.swift", "Engines"),
         ("CloudflareUsageView.swift", "Engines"),
         ("DictationFailure.swift", "Engines"),
         ("AuthTokenStore.swift", "Utils"),
