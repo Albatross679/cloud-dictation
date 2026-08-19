@@ -93,6 +93,10 @@ def patch_preferences() -> None:
     @UserDefault(key: "cloudflareCleanupModel", defaultValue: "llama-8b")
     var cloudflareCleanupModel: String
 
+    /// Playback tempo used for cloud uploads. 1 keeps the original WAV.
+    @UserDefault(key: "cloudflareCompressionRate", defaultValue: 1.0)
+    var cloudflareCompressionRate: Double
+
     /// JSON map of model key to the languages it accepts, cached from the
     /// worker. "*" means unrestricted, empty means auto-detect only.
     @UserDefault(key: "cloudflareModelLanguages", defaultValue: "")
@@ -169,6 +173,10 @@ def patch_settings() -> None:
         didSet { AppPreferences.shared.cloudflareCleanupModel = cloudflareCleanupModel }
     }
 
+    @Published var cloudflareCompressionRate: Double {
+        didSet { AppPreferences.shared.cloudflareCompressionRate = cloudflareCompressionRate }
+    }
+
     @Published var cloudflareTestStatus: CloudflareTestStatus = .idle
 
     func testCloudflareConnection() {
@@ -200,7 +208,8 @@ def patch_settings() -> None:
         self.cloudflareAuthToken = prefs.cloudflareAuthToken
         self.cloudflareModel = prefs.cloudflareModel
         self.cloudflareCleanupEnabled = prefs.cloudflareCleanupEnabled
-        self.cloudflareCleanupModel = prefs.cloudflareCleanupModel""",
+        self.cloudflareCleanupModel = prefs.cloudflareCleanupModel
+        self.cloudflareCompressionRate = prefs.cloudflareCompressionRate""",
         "Settings: init",
     )
 
@@ -259,6 +268,21 @@ def patch_settings() -> None:
                 .font(.caption)
                 .foregroundStyle(.orange)
             }
+
+            Picker("Audio speed", selection: $viewModel.cloudflareCompressionRate) {
+                Text("1").tag(1.0)
+                Text("1.25").tag(1.25)
+                Text("1.5").tag(1.5)
+                Text("1.75").tag(1.75)
+                Text("2").tag(2.0)
+                Text("2.25").tag(2.25)
+                Text("2.5").tag(2.5)
+                Text("2.75").tag(2.75)
+                Text("3").tag(3.0)
+            }
+            Text("Speeds up cloud uploads while preserving pitch. Higher speeds lower cost but can reduce accuracy.")
+                .font(.caption)
+                .foregroundColor(.secondary)
 
             Divider()
 
