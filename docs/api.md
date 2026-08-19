@@ -10,6 +10,35 @@
 
 Auth is a single bearer token compared in constant time, set as the `AUTH_TOKEN` secret. The app keeps its copy in the login Keychain, not UserDefaults.
 
+## Direct Workers AI API mode
+
+The macOS app can skip this Worker and call Cloudflare's documented REST endpoint:
+
+```text
+POST https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{MODEL_ID}
+Authorization: Bearer {WORKERS_AI_API_TOKEN}
+Content-Type: application/json
+```
+
+Create Cloudflare's **Workers AI API Token** from **Workers AI > Use REST API**.
+A manually-created token needs both **Workers AI - Read** and **Workers AI - Edit**.
+The app queries `GET /client/v4/accounts` with that token, stores the first
+visible account ID, and shows an account picker only if multiple accounts are
+visible. New users therefore paste one value—the API token—rather than copying
+an Account ID. Cloudflare returns its normal `{ success, errors, messages,
+result }` envelope; the app presents an error message from `errors` when token,
+account discovery, or inference is rejected.
+
+The direct client mirrors the Worker registry: Nova-3 sends the Worker options
+(`punctuate`, `smart_format`, `numerals`, pinned-language `keyterm`) and parses
+`result.results.channels[0].alternatives[0].transcript`; turbo sends base64
+audio, `task`, `vad_filter`, language, and glossary prompt; base and tiny send
+the byte-array audio form and parse `result.text`. Direct cleanup sends the same
+model IDs, system prompt, messages, temperature, and token cap as
+`src/core/cleanup.js` and reads `result.choices[0].message.content` (or
+`result.response`). The Worker remains necessary only for its usage counter and
+price/catalog endpoint, not transcription or cleanup.
+
 ## POST /transcribe
 
 Raw audio as the request body (`audio/wav`, `audio/mpeg`, `audio/webm`), up to 25 MB.

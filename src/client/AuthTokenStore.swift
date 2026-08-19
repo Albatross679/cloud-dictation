@@ -10,24 +10,33 @@ import Security
 /// unlocked interactively.
 enum AuthTokenStore {
     private static let service = "local.clouddictation.OpenSuperWhisper"
-    private static let account = "cloudflareAuthToken"
+    private static let workerAccount = "cloudflareAuthToken"
+    private static let directAPIAccount = "cloudflareDirectAPIToken"
     private static let legacyDefaultsKey = "cloudflareAuthToken"
 
+    /// The token used by the self-hosted Worker connection mode.
     static var token: String {
         get {
-            if let stored = read() { return stored }
+            if let stored = read(account: workerAccount) { return stored }
             // One-time move of a token written before Keychain storage existed.
             if let legacy = UserDefaults.standard.string(forKey: legacyDefaultsKey), !legacy.isEmpty {
-                write(legacy)
+                write(legacy, account: workerAccount)
                 UserDefaults.standard.removeObject(forKey: legacyDefaultsKey)
                 return legacy
             }
             return ""
         }
-        set { write(newValue) }
+        set { write(newValue, account: workerAccount) }
     }
 
-    private static func baseQuery() -> [String: Any] {
+    /// Kept separately so switching connection modes never overwrites a
+    /// working Worker secret with the user's Cloudflare API token.
+    static var directAPIToken: String {
+        get { read(account: directAPIAccount) ?? "" }
+        set { write(newValue, account: directAPIAccount) }
+    }
+
+    private static func baseQuery(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -35,8 +44,8 @@ enum AuthTokenStore {
         ]
     }
 
-    private static func read() -> String? {
-        var query = baseQuery()
+    private static func read(account: String) -> String? {
+        var query = baseQuery(account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -49,8 +58,8 @@ enum AuthTokenStore {
         return value
     }
 
-    private static func write(_ value: String) {
-        let query = baseQuery()
+    private static func write(_ value: String, account: String) {
+        let query = baseQuery(account: account)
         guard !value.isEmpty else {
             SecItemDelete(query as CFDictionary)
             return
