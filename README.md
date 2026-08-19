@@ -17,7 +17,7 @@ Commercial dictation apps run $8 to $15 a month. Cloudflare gives 10,000 neurons
 |1 hr|**$0**|$6.06/mo|$15/mo|
 ### Latency
 
-| This              | on Whisper base | This, on Nova-3 | Wispr Flow               |
+|                   | This, on Whisper base | This, on Nova-3 | Wispr Flow         |
 | ----------------- | --------------- | --------------- | ------------------------ |
 | Latency, 9 s clip | ~1,250 ms       | **433 ms**      | <700 ms (vendor-claimed) |
 
