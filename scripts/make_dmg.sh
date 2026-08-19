@@ -49,10 +49,11 @@ echo "Built: $DMG ($(du -h "$DMG" | cut -f1))"
 if [ -z "$IDENTITY" ]; then
   cat <<'EOF'
 
-UNSIGNED. It installs on this Mac, and Gatekeeper refuses it everywhere else.
-A recipient would have to run:
+UNSIGNED and un-notarized. Gatekeeper will block this app on other Macs.
+To open it, Control-click (or right-click) the app, choose Open, then confirm.
+Alternatively, after copying it to /Applications, run:
 
-  xattr -dr com.apple.quarantine "/Applications/OSW Cloud.app"
+  xattr -d com.apple.quarantine "/Applications/OSW Cloud.app"
 
 Distributing means an Apple Developer account, then rerunning this with the
 identity and a notarytool keychain profile.

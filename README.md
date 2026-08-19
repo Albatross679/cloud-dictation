@@ -26,8 +26,11 @@ Commercial dictation apps run $8 to $15 a month. Cloudflare gives 10,000 neurons
 You do **not** need to deploy a Worker. The app can call Workers AI in your
 Cloudflare account directly.
 
-1. **Install the app.** Copy `OSW Cloud.app` to `/Applications`. To build it
-   from this repository, run:
+1. **Download [OSW Cloud v0.1.0](https://github.com/Albatross679/cloud-dictation/releases/download/v0.1.0/OSW%20Cloud.dmg)**, open the DMG, and drag `OSW Cloud.app` to `/Applications`.
+   This build is unsigned and un-notarized: if Gatekeeper blocks it, Control-click
+   (or right-click) the app, choose **Open**, then confirm **Open**. Alternatively,
+   run `xattr -d com.apple.quarantine "/Applications/OSW Cloud.app"` after copying it.
+2. **Or build from source:**
 
    ```bash
    ./scripts/create_signing_identity.sh && python3 scripts/patch_osw.py && ./scripts/build_app.sh
