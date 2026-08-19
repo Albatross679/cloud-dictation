@@ -25,9 +25,20 @@ class PatchError(Exception):
     pass
 
 
+# Later patch passes intentionally refine these generated sections, so their
+# original full replacement no longer appears verbatim on a second run. Their
+# stable declarations are unique in Settings.swift and avoid reapplying the
+# large section around a trailing anchor.
+PATCH_SENTINELS = {
+    "Settings: view model properties": "    @Published var cloudflareEndpoint: String {",
+    "Settings: cloudflare panel": "    private var cloudflareSettings: some View {",
+}
+
+
 def patch(path: Path, anchor: str, replacement: str, label: str) -> None:
     text = path.read_text()
-    if replacement.strip() in text:
+    sentinel = PATCH_SENTINELS.get(label)
+    if replacement.strip() in text or (sentinel is not None and sentinel in text):
         print(f"  = {label}: already applied")
         return
     if text.count(anchor) != 1:
@@ -60,6 +71,7 @@ def add_engine_file() -> None:
         ("CloudflareUsageView.swift", "Engines"),
         ("DictationFailure.swift", "Engines"),
         ("AuthTokenStore.swift", "Utils"),
+        ("CloudflareSetupView.swift", "Onboarding"),
     ):
         shutil.copyfile(ROOT / "src" / "client" / name, APP / subdir / name)
         print(f"  + {subdir}/{name}")
@@ -441,6 +453,124 @@ def patch_settings() -> None:
     )
 
 
+def patch_cloudflare_setup() -> None:
+    """Route unconfigured launches through a verified Direct API setup flow."""
+    path = APP / "OpenSuperWhisperApp.swift"
+
+    patch(
+        path,
+        '''                } else if !appState.hasCompletedOnboarding {
+                    OnboardingView()''',
+        '''                } else if appState.isCloudflareSetupPresented {
+                    CloudflareSetupView()
+                } else if !appState.hasCompletedOnboarding {
+                    OnboardingView()''',
+        "App: show Cloudflare setup before generic onboarding",
+    )
+    patch(
+        path,
+        '''            .environmentObject(appState)
+        }
+        .windowStyle(.hiddenTitleBar)''',
+        '''            .environmentObject(appState)
+            .onReceive(NotificationCenter.default.publisher(for: .showCloudflareSetup)) { _ in
+                appState.presentCloudflareSetup()
+            }
+        }
+        .windowStyle(.hiddenTitleBar)''',
+        "App: receive setup rerun requests",
+    )
+    patch(
+        path,
+        '''class AppState: ObservableObject {
+    @Published var hasCompletedOnboarding: Bool {
+        didSet {
+            AppPreferences.shared.hasCompletedOnboarding = hasCompletedOnboarding
+        }
+    }
+
+    init() {
+        var onboarding = AppPreferences.shared.hasCompletedOnboarding
+        #if DEBUG
+        if let force = DevConfig.shared.forceShowOnboarding {
+            onboarding = !force
+        }
+        #endif
+        self.hasCompletedOnboarding = onboarding
+    }
+}''',
+        '''@MainActor
+class AppState: ObservableObject {
+    @Published var hasCompletedOnboarding: Bool {
+        didSet {
+            AppPreferences.shared.hasCompletedOnboarding = hasCompletedOnboarding
+        }
+    }
+
+    @Published var isCloudflareSetupPresented: Bool
+
+    init() {
+        var onboarding = AppPreferences.shared.hasCompletedOnboarding
+        #if DEBUG
+        if let force = DevConfig.shared.forceShowOnboarding {
+            onboarding = !force
+        }
+        #endif
+        self.hasCompletedOnboarding = onboarding
+        self.isCloudflareSetupPresented = Self.needsCloudflareSetup()
+    }
+
+    /// A configured local engine or either Cloudflare credential keeps existing
+    /// installs out of the first-launch screen. New users must prove a Direct
+    /// API token by transcribing their own short recording before it is saved.
+    private static func needsCloudflareSetup() -> Bool {
+        let prefs = AppPreferences.shared
+        let hasDirectToken = !prefs.cloudflareDirectAPIToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasWorkerCredentials = !prefs.cloudflareEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !prefs.cloudflareAuthToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasWhisperModel = !(prefs.selectedWhisperModelPath ?? "").isEmpty
+        let hasCompletedLocalSetup = prefs.hasCompletedOnboarding && prefs.selectedEngine != "cloudflare"
+        return !hasDirectToken && !hasWorkerCredentials && !hasWhisperModel && !hasCompletedLocalSetup
+    }
+
+    func completeCloudflareSetup() {
+        hasCompletedOnboarding = true
+        isCloudflareSetupPresented = false
+        TranscriptionService.shared.reloadEngine()
+    }
+
+    func skipCloudflareSetupToSettings() {
+        hasCompletedOnboarding = true
+        isCloudflareSetupPresented = false
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .openSettings, object: nil)
+        }
+    }
+
+    func presentCloudflareSetup() {
+        isCloudflareSetupPresented = true
+    }
+}''',
+        "App: Cloudflare setup state",
+    )
+
+    settings = APP / "Settings.swift"
+    patch(
+        settings,
+        '''            Text("Vocabulary lives in the Transcription tab. Nova-3 boosts those terms only when a language is pinned.")''',
+        '''            Button("Run setup again") {
+                dismiss()
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: .showCloudflareSetup, object: nil)
+                }
+            }
+            .buttonStyle(.link)
+
+            Text("Vocabulary lives in the Transcription tab. Nova-3 boosts those terms only when a language is pinned.")''',
+        "Settings: rerun Cloudflare setup",
+    )
+
+
 def patch_menu_bar() -> None:
     """Add cloud controls to the existing status-item menu.
 
@@ -454,9 +584,10 @@ def patch_menu_bar() -> None:
         '''    static let openSettings = Notification.Name("OpenSettings")
 }''',
         '''    static let openSettings = Notification.Name("OpenSettings")
+    static let showCloudflareSetup = Notification.Name("ShowCloudflareSetup")
     static let appPreferencesCloudflareMenuChanged = Notification.Name("AppPreferencesCloudflareMenuChanged")
 }''',
-        "Notifications: cloud menu changes",
+        "Notifications: Cloudflare setup and menu",
     )
 
     settings = APP / "Settings.swift"
@@ -954,6 +1085,7 @@ def main() -> int:
         patch_preferences()
         patch_service()
         patch_settings()
+        patch_cloudflare_setup()
         patch_menu_bar()
         patch_onboarding()
         patch_language_util()
