@@ -4,24 +4,22 @@ Dictation for macOS that transcribes on Cloudflare Workers AI instead of on your
 
 Hold a hotkey, speak, and the text lands in whatever app has focus.
 
-> ### Built on OpenSuperWhisper
->
-> This is a fork of **[Starmel/OpenSuperWhisper](https://github.com/Starmel/OpenSuperWhisper)** (MIT), which provides the hotkey, recorder, paste-into-focused-app behavior, history, settings, and the local Whisper and Parakeet engines. This repository adds one thing: a transcription engine that calls a Cloudflare Worker, plus the Worker itself.
->
-> Upstream abstracts inference behind a six member `TranscriptionEngine` protocol, so the cloud engine drops in beside the local ones and nothing upstream is rewritten. If you want dictation that runs entirely on your own machine, **use OpenSuperWhisper directly** — it is the better choice for most people and ships a notarized installer.
->
-> Full attribution, including the projects bundled through the upstream build, is in [NOTICE.md](NOTICE.md).
-
+Built on  **[Starmel/OpenSuperWhisper](https://github.com/Starmel/OpenSuperWhisper)** (MIT)
 ## Why
 
-Commercial dictation apps run $8 to $15 a month. Cloudflare gives 10,000 neurons per day free, on the free plan and the paid plan alike.
+Commercial dictation apps run $8 to $15 a month. Cloudflare gives 10,000 neurons per day free, on the free plan and the paid plan alike. For people who don't really use the free neurons, dictation would be a way to take advantage of that.
 
-| Daily dictation | This, on Whisper turbo | This, on Nova-3 | Wispr Flow |
+### Price
+
+|Daily dictation|This, on Whisper base|This, on Nova-3|Wispr Flow|
 |---|---|---|---|
-| 30 min | **$0** | $1.38/mo | $15/mo |
-| 1 hr | **$0** | $6.06/mo | $15/mo |
+|30 min|**$0**|$1.38/mo|$15/mo|
+|1 hr|**$0**|$6.06/mo|$15/mo|
+### Latency
 
-Whisper turbo stays inside the free tier up to 3.5 hours of speech per day.
+| This              | on Whisper base | This, on Nova-3 | Wispr Flow               |
+| ----------------- | --------------- | --------------- | ------------------------ |
+| Latency, 9 s clip | ~1,250 ms       | **433 ms**      | <700 ms (vendor-claimed) |
 
 ## Install and configure — Direct API (recommended)
 
@@ -99,7 +97,3 @@ repos/            upstream checkout, generated, gitignored
 - [docs/models.md](docs/models.md) — which model to pick, languages, vocabulary, measured accuracy and cost
 - [docs/api.md](docs/api.md) — worker endpoints and parameters
 - [docs/building.md](docs/building.md) — build requirements, signing, packaging, reproducibility
-
-## License
-
-MIT, see [LICENSE](LICENSE). Derived from [OpenSuperWhisper](https://github.com/Starmel/OpenSuperWhisper), MIT, Copyright (c) 2024 OpenSuperWhisper. Third party attribution in [NOTICE.md](NOTICE.md).
