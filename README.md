@@ -39,12 +39,12 @@ Cloudflare account directly.
    Copy `repos/OpenSuperWhisper/build/Build/Products/Release/OSW Cloud.app` to
    `/Applications`, or use `./scripts/make_dmg.sh`. Building needs Xcode,
    `cmake`, Rust, and `libomp`; see [docs/building.md](docs/building.md).
-2. **Create a Cloudflare account** if you do not already have one.
-3. In the Cloudflare dashboard, open **Workers AI** and select **Use REST API**.
+3. **Create a Cloudflare account** if you do not already have one.
+4. In the Cloudflare dashboard, open **Workers AI** and select **Use REST API**.
    Choose **Create a Workers AI API Token** — this is Cloudflare's prefilled
    **Workers AI API Token** template. If making a custom token instead, grant
    both **Workers AI – Read** and **Workers AI – Edit**.
-4. On a fresh launch, the app walks you through creating, testing, and saving a Direct API token in one window. You can also open **Settings > Models > Engine > Cloudflare**; paste **only the API token**. The app finds the
+5. On a fresh launch, the app walks you through creating, testing, and saving a Direct API token in one window. You can also open **Settings > Models > Engine > Cloudflare**; paste **only the API token**. The app finds the
    Cloudflare account automatically; if the token can access more than one,
    choose the account from the picker. The token is stored in the macOS
    Keychain, never in preferences or logs. Use **Test Connection** to surface
