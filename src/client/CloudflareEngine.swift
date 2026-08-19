@@ -47,17 +47,35 @@ struct CloudflareClient {
     }
 
     private func directRequest(model: String, payload: [String: Any]) throws -> URLRequest {
+        try directRequest(
+            model: model,
+            percentEncodedQuery: nil,
+            contentType: "application/json",
+            body: JSONSerialization.data(withJSONObject: payload)
+        )
+    }
+
+    private func directRequest(
+        model: String,
+        percentEncodedQuery: String?,
+        contentType: String,
+        body: Data
+    ) throws -> URLRequest {
         let id = accountID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard mode == .directAPI, !id.isEmpty, !token.isEmpty,
-              let url = URL(string: "https://api.cloudflare.com/client/v4/accounts/\(id)/ai/run/\(model)")
+              var components = URLComponents(string: "https://api.cloudflare.com/client/v4/accounts/\(id)/ai/run/\(model)")
         else { throw ClientError.notConfigured }
+        // The encoder has already escaped these; re-encoding here would double
+        // every percent sign.
+        components.percentEncodedQuery = percentEncodedQuery
+        guard let url = components.url else { throw ClientError.notConfigured }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 300
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
         return request
     }
 
@@ -83,7 +101,20 @@ struct CloudflareClient {
     }
 
     private func directRun(model: String, payload: [String: Any]) async throws -> [String: Any] {
-        let (data, response) = try await URLSession.shared.data(for: directRequest(model: model, payload: payload))
+        try await directRun(request: directRequest(model: model, payload: payload))
+    }
+
+    private func directRun(plan: CloudflareDirectPlan) async throws -> [String: Any] {
+        try await directRun(request: directRequest(
+            model: plan.modelID,
+            percentEncodedQuery: plan.percentEncodedQuery,
+            contentType: plan.contentType,
+            body: plan.body
+        ))
+    }
+
+    private func directRun(request: URLRequest) async throws -> [String: Any] {
+        let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw ClientError.badStatus(0, "") }
         let body = String(data: data, encoding: .utf8) ?? ""
         guard (200...299).contains(http.statusCode) else { throw ClientError.badStatus(http.statusCode, body) }
@@ -145,13 +176,12 @@ struct CloudflareClient {
     }
 
     // The direct API has no equivalent to this app's Worker-owned /models
-    // catalog, so retain the same tested registry locally for its picker.
-    private static let directCatalog = [
-        ModelEntry(key: "nova-3", languages: ["en", "es", "fr", "de", "it", "pt", "nl", "hi", "ru", "ja"]),
-        ModelEntry(key: "whisper-turbo", languages: nil),
-        ModelEntry(key: "whisper", languages: []),
-        ModelEntry(key: "whisper-tiny-en", languages: ["en"]),
-    ]
+    // catalog, so the picker reads the same local registry the request encoder
+    // uses. One registry means the picker cannot offer a model or language the
+    // encoder has no verified wire form for.
+    private static let directCatalog = CloudflareDirectRequest.modelKeys.compactMap { key in
+        CloudflareDirectRequest.models[key].map { ModelEntry(key: key, languages: $0.languages) }
+    }
 
     func validateConnection() async throws -> [String] {
         if mode == .worker { return try await models() }
@@ -216,50 +246,27 @@ struct CloudflareClient {
         let values = Dictionary(uniqueKeysWithValues: query.compactMap { item in
             item.value.map { (item.name, $0) }
         })
-        let model = values["model"] ?? "nova-3"
+        let modelKey = values["model"] ?? "nova-3"
         let language = values["language"] ?? "auto"
         let terms = Self.parseTerms(values["vocabulary"] ?? "")
         let audio = try Data(contentsOf: fileURL)
-        let byteArray = audio.map(Int.init)
 
-        var payload: [String: Any] = ["audio": byteArray]
-        switch model {
-        case "nova-3":
-            payload["punctuate"] = true
-            payload["smart_format"] = true
-            payload["numerals"] = true
-            payload["detect_language"] = language == "auto"
-            if language != "auto" { payload["language"] = language }
-            if language != "auto", !terms.isEmpty { payload["keyterm"] = terms }
-        case "whisper-turbo":
-            // The Worker sends this model base64; preserve that input form.
-            payload["audio"] = audio.base64EncodedString()
-            payload["task"] = "transcribe"
-            payload["vad_filter"] = true
-            if language != "auto" { payload["language"] = language }
-            if !terms.isEmpty { payload["initial_prompt"] = "Glossary: \(terms.joined(separator: ", "))." }
-        case "whisper", "whisper-tiny-en":
-            break
-        default:
-            throw ClientError.badStatus(400, "Unknown transcription model: \(model)")
+        let model: CloudflareDirectModel
+        let plan: CloudflareDirectPlan
+        do {
+            model = try CloudflareDirectRequest.model(modelKey)
+            plan = try CloudflareDirectRequest.transcription(
+                model: modelKey,
+                audio: audio,
+                language: language,
+                terms: terms
+            )
+        } catch {
+            throw ClientError.badStatus(400, error.localizedDescription)
         }
 
-        let ids = [
-            "nova-3": "@cf/deepgram/nova-3",
-            "whisper-turbo": "@cf/openai/whisper-large-v3-turbo",
-            "whisper": "@cf/openai/whisper",
-            "whisper-tiny-en": "@cf/openai/whisper-tiny-en",
-        ]
-        guard let modelID = ids[model] else { throw ClientError.badStatus(400, "Unknown transcription model: \(model)") }
-        let result = try await directRun(model: modelID, payload: payload)
-        let transcript: String
-        if model == "nova-3" {
-            transcript = (((result["results"] as? [String: Any])?["channels"] as? [[String: Any]])?.first?["alternatives"] as? [[String: Any]])?.first?["transcript"] as? String ?? ""
-        } else {
-            transcript = (result["text"] as? String) ?? ((result["transcription_info"] as? [String: Any])?["text"] as? String) ?? ""
-        }
-
-        var text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let result = try await directRun(plan: plan)
+        var text = (model.readText(result) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if values["cleanup"] == "1", !text.isEmpty {
             text = try await directCleanup(text: text, model: values["cleanup_model"] ?? "llama-8b", terms: terms)
         }

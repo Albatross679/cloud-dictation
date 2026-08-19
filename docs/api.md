@@ -29,15 +29,26 @@ an Account ID. Cloudflare returns its normal `{ success, errors, messages,
 result }` envelope; the app presents an error message from `errors` when token,
 account discovery, or inference is rejected.
 
-The direct client mirrors the Worker registry: Nova-3 sends the Worker options
-(`punctuate`, `smart_format`, `numerals`, pinned-language `keyterm`) and parses
-`result.results.channels[0].alternatives[0].transcript`; turbo sends base64
-audio, `task`, `vad_filter`, language, and glossary prompt; base and tiny send
-the byte-array audio form and parse `result.text`. Direct cleanup sends the same
-model IDs, system prompt, messages, temperature, and token cap as
-`src/core/cleanup.js` and reads `result.choices[0].message.content` (or
-`result.response`). The Worker remains necessary only for its usage counter and
-price/catalog endpoint, not transcription or cleanup.
+The direct client mirrors the Worker registry's options and response parsing,
+but not its audio input form. `env.AI.run` is an in-process binding, so
+`src/core/models.js` can hand Nova-3 a `{ body: ReadableStream, contentType }`
+object that no HTTP request can serialize. Each model's REST wire form is
+therefore declared in `src/client/CloudflareDirectRequest.swift`, which is
+authoritative for the direct path:
+
+| Model | REST request body | Options |
+|---|---|---|
+| `nova-3` | raw audio bytes, `Content-Type: audio/wav` | query string, `keyterm` repeated per term |
+| `whisper-turbo` | JSON, `audio` as base64 | JSON body |
+| `whisper`, `whisper-tiny-en` | JSON, `audio` as a byte array | none |
+
+Sending Nova-3 audio as JSON in any shape, including the binding's own object,
+returns `400 AiError: Bad input: Error: required properties at '/audio' are
+'body,contentType'`. Direct cleanup sends the same model IDs, system prompt,
+messages, temperature, and token cap as `src/core/cleanup.js` and reads
+`result.choices[0].message.content` (or `result.response`); chat models take the
+same JSON over REST as over the binding. The Worker remains necessary only for
+its usage counter and price/catalog endpoint, not transcription or cleanup.
 
 ## POST /transcribe
 
