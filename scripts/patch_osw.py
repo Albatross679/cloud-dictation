@@ -337,6 +337,256 @@ def patch_settings() -> None:
     )
 
 
+def patch_menu_bar() -> None:
+    """Add cloud controls to the existing status-item menu.
+
+    The menu reads the same AppPreferences values as the Settings pane. Its
+    controls remain present for every engine, but AppKit disables them unless
+    Cloudflare is the selected engine.
+    """
+    notifications = APP / "Utils" / "NotificationName+App.swift"
+    patch(
+        notifications,
+        '''    static let openSettings = Notification.Name("OpenSettings")
+}''',
+        '''    static let openSettings = Notification.Name("OpenSettings")
+    static let appPreferencesCloudflareMenuChanged = Notification.Name("AppPreferencesCloudflareMenuChanged")
+}''',
+        "Notifications: cloud menu changes",
+    )
+
+    settings = APP / "Settings.swift"
+    patch(
+        settings,
+        (
+            "            Task { @MainActor in\n"
+            "                TranscriptionService.shared.reloadEngine()\n"
+            "            }\n"
+            "        }\n"
+            "    }\n"
+            "    \n"
+            "    @Published var fluidAudioModelVersion: String {"
+        ),
+        (
+            "            Task { @MainActor in\n"
+            "                TranscriptionService.shared.reloadEngine()\n"
+            "            }\n"
+            "            NotificationCenter.default.post(name: .appPreferencesCloudflareMenuChanged, object: nil)\n"
+            "        }\n"
+            "    }\n"
+            "    \n"
+            "    @Published var fluidAudioModelVersion: String {"
+        ),
+        "Settings: announce engine changes to cloud menu",
+    )
+    patch(
+        settings,
+        '''            if !allowed.contains(selectedLanguage) {
+                selectedLanguage = allowed.first ?? "auto"
+            }
+        }
+    }
+
+    @Published var cloudflareCleanupEnabled: Bool {''',
+        '''            if !allowed.contains(selectedLanguage) {
+                selectedLanguage = allowed.first ?? "auto"
+            }
+            NotificationCenter.default.post(name: .appPreferencesCloudflareMenuChanged, object: nil)
+        }
+    }
+
+    @Published var cloudflareCleanupEnabled: Bool {''',
+        "Settings: announce cloud model changes to menu",
+    )
+    patch(
+        settings,
+        '''    @Published var cloudflareCleanupEnabled: Bool {
+        didSet { AppPreferences.shared.cloudflareCleanupEnabled = cloudflareCleanupEnabled }
+    }''',
+        '''    @Published var cloudflareCleanupEnabled: Bool {
+        didSet {
+            AppPreferences.shared.cloudflareCleanupEnabled = cloudflareCleanupEnabled
+            NotificationCenter.default.post(name: .appPreferencesCloudflareMenuChanged, object: nil)
+        }
+    }''',
+        "Settings: announce cleanup changes to menu",
+    )
+    patch(
+        settings,
+        '''    @Published var cloudflareCompressionRate: Double {
+        didSet { AppPreferences.shared.cloudflareCompressionRate = cloudflareCompressionRate }
+    }''',
+        '''    @Published var cloudflareCompressionRate: Double {
+        didSet {
+            AppPreferences.shared.cloudflareCompressionRate = cloudflareCompressionRate
+            NotificationCenter.default.post(name: .appPreferencesCloudflareMenuChanged, object: nil)
+        }
+    }''',
+        "Settings: announce compression changes to menu",
+    )
+
+    app = APP / "OpenSuperWhisperApp.swift"
+    patch(
+        app,
+        (
+            "    private var hideMainWindowAtLaunch = false\n"
+            "    \n"
+            "    func applicationDidFinishLaunching(_ notification: Notification) {"
+        ),
+        (
+            "    private var hideMainWindowAtLaunch = false\n"
+            "    private var cloudflareMenuPreferencesObserver: NSObjectProtocol?\n"
+            "    private let cloudflareModels = [\n"
+            "        (key: \"nova-3\", label: \"Deepgram Nova-3\"),\n"
+            "        (key: \"whisper-turbo\", label: \"Whisper large-v3-turbo\"),\n"
+            "        (key: \"whisper\", label: \"Whisper (base)\"),\n"
+            "        (key: \"whisper-tiny-en\", label: \"Whisper tiny (English)\"),\n"
+            "    ]\n"
+            "    private let cloudflareCompressionRates = [\n"
+            "        (value: 1.0, label: \"1\"),\n"
+            "        (value: 1.25, label: \"1.25\"),\n"
+            "        (value: 1.5, label: \"1.5\"),\n"
+            "        (value: 1.75, label: \"1.75\"),\n"
+            "        (value: 2.0, label: \"2\"),\n"
+            "        (value: 2.25, label: \"2.25\"),\n"
+            "        (value: 2.5, label: \"2.5\"),\n"
+            "        (value: 2.75, label: \"2.75\"),\n"
+            "        (value: 3.0, label: \"3\"),\n"
+            "    ]\n"
+            "    \n"
+            "    func applicationDidFinishLaunching(_ notification: Notification) {"
+        ),
+        "Menu bar: cloud control values",
+    )
+    patch(
+        app,
+        (
+            "        OpenSuperWhisperApp.startTranscriptionQueue()\n"
+            "        observeMicrophoneChanges()\n"
+            "        \n"
+            "        IndicatorWindowManager.shared.warmUp()"
+        ),
+        (
+            "        OpenSuperWhisperApp.startTranscriptionQueue()\n"
+            "        observeMicrophoneChanges()\n"
+            "        observeCloudflareMenuPreferenceChanges()\n"
+            "        \n"
+            "        IndicatorWindowManager.shared.warmUp()"
+        ),
+        "Menu bar: observe cloud setting changes",
+    )
+    patch(
+        app,
+        '''    private func observeMicrophoneChanges() {
+        microphoneObserver = microphoneService.$availableMicrophones''',
+        '''    private func observeCloudflareMenuPreferenceChanges() {
+        cloudflareMenuPreferencesObserver = NotificationCenter.default.addObserver(
+            forName: .appPreferencesCloudflareMenuChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateStatusBarMenu()
+        }
+    }
+
+    private func observeMicrophoneChanges() {
+        microphoneObserver = microphoneService.$availableMicrophones''',
+        "Menu bar: observe cloud preferences",
+    )
+    patch(
+        app,
+        (
+            "        transcriptionLanguageItem.submenu = languageSubmenu\n"
+            "        menu.addItem(transcriptionLanguageItem)\n"
+            "        \n"
+            "        // Listen for language preference changes"
+        ),
+        (
+            "        transcriptionLanguageItem.submenu = languageSubmenu\n"
+            "        menu.addItem(transcriptionLanguageItem)\n"
+            "\n"
+            "        addCloudflareQuickControls(to: menu)\n"
+            "        \n"
+            "        // Listen for language preference changes"
+        ),
+        "Menu bar: cloud quick controls",
+    )
+    patch(
+        app,
+        '''    @objc private func selectMicrophone(_ sender: NSMenuItem) {''',
+        '''    private func addCloudflareQuickControls(to menu: NSMenu) {
+        let prefs = AppPreferences.shared
+        let cloudflareIsActive = prefs.selectedEngine == "cloudflare"
+
+        let modelItem = NSMenuItem(title: "Model", action: nil, keyEquivalent: "")
+        let modelMenu = NSMenu()
+        for model in cloudflareModels {
+            let item = NSMenuItem(title: model.label, action: #selector(selectCloudflareModel(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = model.key
+            item.state = prefs.cloudflareModel == model.key ? .on : .off
+            item.isEnabled = cloudflareIsActive
+            modelMenu.addItem(item)
+        }
+        modelItem.submenu = modelMenu
+        modelItem.isEnabled = cloudflareIsActive
+        menu.addItem(modelItem)
+
+        let compressionItem = NSMenuItem(title: "Compression rate", action: nil, keyEquivalent: "")
+        let compressionMenu = NSMenu()
+        for rate in cloudflareCompressionRates {
+            let item = NSMenuItem(title: rate.label, action: #selector(selectCloudflareCompressionRate(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = rate.value
+            item.state = abs(prefs.cloudflareCompressionRate - rate.value) < 0.0001 ? .on : .off
+            item.isEnabled = cloudflareIsActive
+            compressionMenu.addItem(item)
+        }
+        compressionItem.submenu = compressionMenu
+        compressionItem.isEnabled = cloudflareIsActive
+        menu.addItem(compressionItem)
+
+        let cleanupItem = NSMenuItem(title: "LLM cleanup", action: #selector(toggleCloudflareCleanup(_:)), keyEquivalent: "")
+        cleanupItem.target = self
+        cleanupItem.state = prefs.cloudflareCleanupEnabled ? .on : .off
+        cleanupItem.isEnabled = cloudflareIsActive
+        menu.addItem(cleanupItem)
+
+        menu.addItem(NSMenuItem.separator())
+    }
+
+    @objc private func selectCloudflareModel(_ sender: NSMenuItem) {
+        guard let model = sender.representedObject as? String else { return }
+
+        let prefs = AppPreferences.shared
+        prefs.cloudflareModel = model
+        let supportedLanguages = LanguageUtil.supportedLanguages(
+            engine: "cloudflare",
+            fluidAudioModelVersion: prefs.fluidAudioModelVersion
+        )
+        if !supportedLanguages.contains(prefs.whisperLanguage) {
+            prefs.whisperLanguage = supportedLanguages.first ?? "auto"
+            NotificationCenter.default.post(name: .appPreferencesLanguageChanged, object: nil)
+        }
+        updateStatusBarMenu()
+    }
+
+    @objc private func selectCloudflareCompressionRate(_ sender: NSMenuItem) {
+        guard let rate = sender.representedObject as? NSNumber else { return }
+        AppPreferences.shared.cloudflareCompressionRate = rate.doubleValue
+        updateStatusBarMenu()
+    }
+
+    @objc private func toggleCloudflareCleanup(_ sender: NSMenuItem) {
+        AppPreferences.shared.cloudflareCleanupEnabled.toggle()
+        updateStatusBarMenu()
+    }
+
+    @objc private func selectMicrophone(_ sender: NSMenuItem) {''',
+        "Menu bar: cloud control actions",
+    )
+
+
 def patch_onboarding() -> None:
     """Offer Cloudflare as a first class choice on the welcome screen.
 
@@ -594,6 +844,7 @@ def main() -> int:
         patch_preferences()
         patch_service()
         patch_settings()
+        patch_menu_bar()
         patch_onboarding()
         patch_language_util()
         patch_fluidaudio_engine()
