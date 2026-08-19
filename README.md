@@ -41,8 +41,7 @@ Cloudflare account directly.
    Choose **Create a Workers AI API Token** — this is Cloudflare's prefilled
    **Workers AI API Token** template. If making a custom token instead, grant
    both **Workers AI – Read** and **Workers AI – Edit**.
-4. In the app, open **Settings > Models > Engine > Cloudflare**. A fresh
-   install already selects **Direct API**; paste **only the API token**. The app finds the
+4. On a fresh launch, the app walks you through creating, testing, and saving a Direct API token in one window. You can also open **Settings > Models > Engine > Cloudflare**; paste **only the API token**. The app finds the
    Cloudflare account automatically; if the token can access more than one,
    choose the account from the picker. The token is stored in the macOS
    Keychain, never in preferences or logs. Use **Test Connection** to surface
