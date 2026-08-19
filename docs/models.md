@@ -24,7 +24,7 @@ Every picker in the app follows its own selected model, and no engine offers a l
 | `whisper` | auto-detect only, discards the setting | correct, but traditional characters |
 | `whisper-tiny-en` | `en` | hallucinates English, unusable |
 
-Nova-3 is the fastest but is English-plus-nine. Cloudflare's build is far narrower than Deepgram's documented 90+ codes. `GET /models` returns the authoritative list per model; the app caches it on connect, and an unsupported pairing returns a 400 naming the supported set rather than a 502 from the provider.
+Nova-3 is the fastest but is English-plus-nine. Cloudflare's build is far narrower than Deepgram's documented 90+ codes. In Worker mode `GET /models` returns the authoritative list per model; Direct API mode carries the same tested registry in the app because the REST endpoint has no equivalent catalog route. An unsupported pairing is rejected locally by the picker or returns Cloudflare's explicit API error rather than a silent fallback.
 
 The local engines follow their own models too: local Whisper narrows to English for a `ggml-*.en.bin`, and Parakeet follows its version. Parakeet's `transcribe` has always taken a `language:` argument that upstream never passed, so its filtered picker was decorative and every clip was auto-detected until this fork supplied it.
 

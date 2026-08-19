@@ -77,11 +77,22 @@ def patch_preferences() -> None:
     @UserDefault(key: "cloudflareEndpoint", defaultValue: "")
     var cloudflareEndpoint: String
 
+    @UserDefault(key: "cloudflareConnectionMode", defaultValue: "worker")
+    var cloudflareConnectionMode: String
+
+    @UserDefault(key: "cloudflareAccountID", defaultValue: "")
+    var cloudflareAccountID: String
+
     /// Keychain rather than UserDefaults: a bearer token in a plist is readable
     /// with `defaults read` by anything running as this user.
     var cloudflareAuthToken: String {
         get { AuthTokenStore.token }
         set { AuthTokenStore.token = newValue }
+    }
+
+    var cloudflareDirectAPIToken: String {
+        get { AuthTokenStore.directAPIToken }
+        set { AuthTokenStore.directAPIToken = newValue }
     }
 
     @UserDefault(key: "cloudflareModel", defaultValue: "nova-3")
@@ -149,8 +160,63 @@ def patch_settings() -> None:
         didSet { AppPreferences.shared.cloudflareEndpoint = cloudflareEndpoint }
     }
 
+    @Published var cloudflareConnectionMode: String {
+        didSet {
+            AppPreferences.shared.cloudflareConnectionMode = cloudflareConnectionMode
+            if cloudflareConnectionMode == "direct" { discoverCloudflareAccounts() }
+        }
+    }
+
+    @Published var cloudflareAccountID: String {
+        didSet { AppPreferences.shared.cloudflareAccountID = cloudflareAccountID }
+    }
+
+    @Published var cloudflareAccounts: [CloudflareClient.Account] = []
+    private var cloudflareAccountDiscoveryTask: Task<Void, Never>?
+
     @Published var cloudflareAuthToken: String {
         didSet { AppPreferences.shared.cloudflareAuthToken = cloudflareAuthToken }
+    }
+
+    @Published var cloudflareDirectAPIToken: String {
+        didSet {
+            AppPreferences.shared.cloudflareDirectAPIToken = cloudflareDirectAPIToken
+            if cloudflareConnectionMode == "direct" { discoverCloudflareAccounts() }
+        }
+    }
+
+    func discoverCloudflareAccounts() {
+        cloudflareAccountDiscoveryTask?.cancel()
+        guard !cloudflareDirectAPIToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            cloudflareAccounts = []
+            return
+        }
+        cloudflareAccountDiscoveryTask = Task { @MainActor [weak self] in
+            // SecureField updates character-by-character. Wait for a paste or
+            // a brief pause instead of issuing one API request per character.
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard !Task.isCancelled, let self else { return }
+            do {
+                let accounts = try await CloudflareEngine.client.accounts()
+                guard !Task.isCancelled else { return }
+                self.cloudflareAccounts = accounts
+                if !accounts.contains(where: { $0.id == self.cloudflareAccountID }) {
+                    self.cloudflareAccountID = accounts[0].id
+                }
+            } catch {
+                // Test Connection presents the API's credential error. Avoid
+                // flashing an error while a user is still entering a token.
+                self.cloudflareAccounts = []
+            }
+        }
+    }
+
+    private func refreshCloudflareAccountsForTest() async throws {
+        let accounts = try await CloudflareEngine.client.accounts()
+        cloudflareAccounts = accounts
+        if !accounts.contains(where: { $0.id == cloudflareAccountID }) {
+            cloudflareAccountID = accounts[0].id
+        }
     }
 
     @Published var cloudflareModel: String {
@@ -183,7 +249,10 @@ def patch_settings() -> None:
         cloudflareTestStatus = .testing
         Task { @MainActor in
             do {
-                let models = try await CloudflareEngine.client.models()
+                if cloudflareConnectionMode == "direct" {
+                    try await refreshCloudflareAccountsForTest()
+                }
+                let models = try await CloudflareEngine.client.validateConnection()
                 cloudflareTestStatus = .ok("Connected. \(models.count) models available.")
                 TranscriptionService.shared.reloadEngine()
             } catch {
@@ -205,7 +274,10 @@ def patch_settings() -> None:
         """        self.selectedEngine = prefs.selectedEngine
         self.fluidAudioModelVersion = prefs.fluidAudioModelVersion
         self.cloudflareEndpoint = prefs.cloudflareEndpoint
+        self.cloudflareConnectionMode = prefs.cloudflareConnectionMode
+        self.cloudflareAccountID = prefs.cloudflareAccountID
         self.cloudflareAuthToken = prefs.cloudflareAuthToken
+        self.cloudflareDirectAPIToken = prefs.cloudflareDirectAPIToken
         self.cloudflareModel = prefs.cloudflareModel
         self.cloudflareCleanupEnabled = prefs.cloudflareCleanupEnabled
         self.cloudflareCleanupModel = prefs.cloudflareCleanupModel
@@ -240,15 +312,42 @@ def patch_settings() -> None:
         """    private var modelSettings: some View {""",
         '''    private var cloudflareSettings: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Worker Endpoint")
+            Text("Connection")
                 .font(.headline)
-            TextField("https://cloud-dictation.<subdomain>.workers.dev", text: $viewModel.cloudflareEndpoint)
-                .textFieldStyle(.roundedBorder)
+            Picker("Connection", selection: $viewModel.cloudflareConnectionMode) {
+                Text("Direct API").tag("direct")
+                Text("Worker").tag("worker")
+            }
+            .pickerStyle(.segmented)
 
-            Text("Auth Token")
-                .font(.headline)
-            SecureField("Bearer token", text: $viewModel.cloudflareAuthToken)
-                .textFieldStyle(.roundedBorder)
+            if viewModel.cloudflareConnectionMode == "direct" {
+                SecureField("Workers AI API token", text: $viewModel.cloudflareDirectAPIToken)
+                    .textFieldStyle(.roundedBorder)
+                if viewModel.cloudflareAccounts.count > 1 {
+                    Picker("Cloudflare account", selection: $viewModel.cloudflareAccountID) {
+                        ForEach(viewModel.cloudflareAccounts) { account in
+                            Text(account.name).tag(account.id)
+                        }
+                    }
+                } else if let account = viewModel.cloudflareAccounts.first {
+                    Text("Using Cloudflare account: \(account.name)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Text("Paste a Workers AI API Token and the app finds its account automatically. Create one from Workers AI > Use REST API; it stays in this Mac's Keychain.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                Text("Worker Endpoint")
+                    .font(.headline)
+                TextField("https://cloud-dictation.<subdomain>.workers.dev", text: $viewModel.cloudflareEndpoint)
+                    .textFieldStyle(.roundedBorder)
+
+                Text("Auth Token")
+                    .font(.headline)
+                SecureField("Bearer token", text: $viewModel.cloudflareAuthToken)
+                    .textFieldStyle(.roundedBorder)
+            }
 
             Text("Transcription Model")
                 .font(.headline)
@@ -330,6 +429,11 @@ def patch_settings() -> None:
                 .foregroundColor(.secondary)
         }
         .padding(.vertical, 8)
+        .onAppear {
+            if viewModel.cloudflareConnectionMode == "direct" {
+                viewModel.discoverCloudflareAccounts()
+            }
+        }
     }
 
     private var modelSettings: some View {''',
@@ -675,7 +779,13 @@ enum OnboardingModelType {
             AppPreferences.shared.selectedEngine = "fluidaudio"
             AppPreferences.shared.fluidAudioModelVersion = version
         case .cloudflare:
-            AppPreferences.shared.selectedEngine = "cloudflare"
+            let prefs = AppPreferences.shared
+            prefs.selectedEngine = "cloudflare"
+            // Existing installs retain Worker mode. A first-time Cloudflare
+            // user has no Worker credentials, so start on the no-deploy path.
+            if prefs.cloudflareEndpoint.isEmpty && prefs.cloudflareAuthToken.isEmpty {
+                prefs.cloudflareConnectionMode = "direct"
+            }
         }""",
         "Onboarding: selection",
     )
