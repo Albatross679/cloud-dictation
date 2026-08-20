@@ -6,3 +6,7 @@ repos/
 runs/
 temporary/
 __pycache__/
+
+# local agent memory, not published
+AGENTS.md
+CLAUDE.md
