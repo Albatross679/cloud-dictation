@@ -29,8 +29,11 @@ You do **not** need to deploy a Worker. The app can call Workers AI in your Clou
 
 1. **Download [OSW Cloud v0.1.0](https://github.com/Albatross679/cloud-dictation/releases/download/v0.1.0/OSW.Cloud.dmg)**, open the DMG, and drag `OSW Cloud.app` to `/Applications`. Or install with Homebrew: `brew install --cask albatross679/tap/osw-cloud`.
 2. **Create a Cloudflare account** if you do not already have one.
-3. In the Cloudflare dashboard, open **Workers AI** and select **Use REST API**. Choose **Create a Workers AI API Token**. This is Cloudflare's prefilled **Workers AI API Token** template. If making a custom token instead, grant both **Workers AI - Read** and **Workers AI - Edit**.
+3. In the Cloudflare dashboard, **AI in the left side panel -> Workers AI -> Rest API -> Create API Token**
+   <img src="attachments/workers-ai-rest-api.png" width="600" alt="Cloudflare dashboard: Workers AI page with the REST API button">
+   <img src="attachments/create-api-token.png" width="600" alt="Using Workers AI REST API page with the Create a Workers AI API Token panel">
 4. On a fresh launch, the app walks you through creating, testing, and saving a Direct API token in one window. You can also open **Settings > Models > Engine > Cloudflare**; paste **only the API token**. Use **Test Connection** to surface an invalid token or account before dictating.
+   <img src="attachments/app-settings-direct-api.png" width="475" alt="App settings: Cloudflare engine, Direct API connection, token pasted">
 
 ### Settings worth knowing
 
