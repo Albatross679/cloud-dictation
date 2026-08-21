@@ -1,5 +1,7 @@
 # Choosing a model
 
+Cloudflare is the default provider and the rest of this page is about it. Two others are available under Settings > Models > Engine > Provider; skip to [Other providers](#other-providers) for what they can and cannot do.
+
 Measured against this account, not quoted from vendor docs.
 
 | | Nova-3 | Whisper turbo | Whisper base | Whisper tiny |
@@ -77,6 +79,68 @@ The worker derives neurons per request rather than querying billing, so no extra
 Derived counts estimate what Cloudflare will bill. The dashboard is the authority.
 
 The counter's window is a **UTC day**, matching when the free tier resets. West of UTC that rolls over during the evening, so the readout says "Since 00:00 UTC" rather than "Today".
+
+## Other providers
+
+Hugging Face and OpenRouter transcribe the same recorded WAV through their own APIs and their own keys. Every claim below came from a live request against the vendor rather than from a docs page, and the encoder tests in `scripts/test_provider_requests.swift` pin the wire shapes.
+
+### Hugging Face
+
+Requests go to `POST https://router.huggingface.co/hf-inference/models/<model>` with the WAV as the raw request body and `Content-Type: audio/wav`. The response is `{"text": "..."}`. The same audio also works as `{"inputs": "<base64>"}`; raw bytes are used because they avoid base64's 33 percent upload overhead. The legacy host `api-inference.huggingface.co` no longer resolves.
+
+Only two models are offered, because only two exist to offer. `GET /api/models?pipeline_tag=automatic-speech-recognition&inference_provider=hf-inference` returns exactly `openai/whisper-large-v3-turbo` and `openai/whisper-large-v3`; `whisper-small`, `whisper-tiny.en`, `distil-large-v3`, and `parakeet-tdt-0.6b-v2` all answer HTTP 400 "Model not supported by provider hf-inference".
+
+Two features cannot work here, and both are disabled in the UI with the reason rather than being silently dropped:
+
+| Sent | Response |
+|---|---|
+| `parameters.language` | 400, "AutomaticSpeechRecognitionPipeline._sanitize_parameters() got an unexpected keyword argument 'language'" |
+| `parameters.generation_parameters.prompt` | 400, "The following `model_kwargs` are not used by the model: ['prompt']" |
+
+So Whisper always auto-detects the language here, and the vocabulary list cannot reach the recognizer. It still reaches the cleanup pass as a list of known spellings.
+
+Other Hugging Face providers do serve Whisper: fal-ai, replicate, together, and deepinfra all appear in the model's provider mapping. Each has its own request schema, so none is wired up and none is offered.
+
+### OpenRouter
+
+OpenRouter has had a dedicated speech-to-text endpoint since 2026-05-01, so audio does not go through chat completions as an `input_audio` content part. Requests go to `POST https://openrouter.ai/api/v1/audio/transcriptions` with the body `{"model", "input_audio": {"data": "<base64>", "format": "wav"}, "language"?}`. The response is `{"text", "usage": {"seconds", "total_tokens", "cost"}}`. A `multipart/form-data` form is accepted too for OpenAI SDK compatibility; JSON is used here because the body is then one comparable value that a unit test can assert on.
+
+`GET /api/v1/models?output_modalities=transcription` lists 19 models. The picker offers five:
+
+| Key | Model | Why |
+|---|---|---|
+| `whisper-large-v3-turbo` | `openai/whisper-large-v3-turbo` | default, cheapest Whisper here |
+| `whisper-large-v3` | `openai/whisper-large-v3` | more accurate Whisper |
+| `nova-3` | `deepgram/nova-3` | the same model the Cloudflare default uses |
+| `gpt-4o-mini-transcribe` | `openai/gpt-4o-mini-transcribe` | strong on proper nouns |
+| `gpt-4o-transcribe` | `openai/gpt-4o-transcribe` | most accurate option here |
+
+Language pinning works: `language` takes an ISO-639-1 code and is omitted entirely under auto-detect, because "auto" is not a code. Vocabulary boosting does not, because the endpoint has no prompt or keyterm field. Uploads are capped at 25 MB, which the client checks before encoding so the message names a size rather than surfacing a truncated upload, and upstream providers time out after about 60 seconds.
+
+Pricing units differ per model on OpenRouter's catalogue, so no per-minute figure is quoted here. Every response carries its own `usage.cost` and the activity page is the authority.
+
+### Test Connection
+
+All three providers report three outcomes distinctly, because the fix differs for each:
+
+| Outcome | Cloudflare | Hugging Face | OpenRouter |
+|---|---|---|---|
+| Key rejected | 401 from a small inference | 401, "Invalid username or password." | 401, "User not found." |
+| Host unreachable | transport error | transport error | transport error |
+| Reachable, request refused | API error with its code | 400 with the vendor's message | 400 with the vendor's message |
+
+Hugging Face has no credential-only speech route and `/api/whoami-v2` proves a token exists without proving it may call Inference Providers, so the check is a real transcription of a quarter second of generated silence: the same route a dictation takes. OpenRouter has `GET /api/v1/key`, which costs nothing, so that is used instead.
+
+### Cleanup
+
+The cleanup pass follows the provider rather than being skipped. Both new providers expose an OpenAI-shaped `chat/completions` route, so one encoder serves both, with the same system prompt Cloudflare uses.
+
+| Provider | Route | Models |
+|---|---|---|
+| Hugging Face | `router.huggingface.co/v1/chat/completions` | Llama 3.1 8B (default), Llama 3.3 70B, Qwen3 235B A22B |
+| OpenRouter | `openrouter.ai/api/v1/chat/completions` | Gemini 2.5 Flash (default), GPT-4o mini, Llama 3.1 8B |
+
+The gpt-oss family is deliberately absent from the Hugging Face list. It answers 200 with an empty `choices[0].message.content` because its output goes to `reasoning`, which would make the cleanup pass a no-op that looks like it ran.
 
 ## Careful points
 

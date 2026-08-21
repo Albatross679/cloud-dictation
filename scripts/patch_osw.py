@@ -69,6 +69,9 @@ def add_engine_file() -> None:
     for name, subdir in (
         ("CloudflareEngine.swift", "Engines"),
         ("CloudflareDirectRequest.swift", "Engines"),
+        ("CloudProvider.swift", "Engines"),
+        ("HuggingFaceRequest.swift", "Engines"),
+        ("OpenRouterRequest.swift", "Engines"),
         ("CloudflareUsageView.swift", "Engines"),
         ("DictationFailure.swift", "Engines"),
         ("AuthTokenStore.swift", "Utils"),
@@ -108,8 +111,39 @@ def patch_preferences() -> None:
         set { AuthTokenStore.directAPIToken = newValue }
     }
 
+    /// Which cloud transcribes: cloudflare, huggingface, or openrouter.
+    /// Existing installs have no value and so keep Cloudflare.
+    @UserDefault(key: "cloudProvider", defaultValue: "cloudflare")
+    var cloudProvider: String
+
+    /// One Keychain entry per provider. Switching provider must never
+    /// overwrite another vendor's key, and no two providers share one.
+    var huggingFaceAPIToken: String {
+        get { AuthTokenStore.key(for: .huggingface) }
+        set { AuthTokenStore.setKey(newValue, for: .huggingface) }
+    }
+
+    var openRouterAPIToken: String {
+        get { AuthTokenStore.key(for: .openrouter) }
+        set { AuthTokenStore.setKey(newValue, for: .openrouter) }
+    }
+
     @UserDefault(key: "cloudflareModel", defaultValue: "nova-3")
     var cloudflareModel: String
+
+    /// A model key only means something to the vendor that publishes it, so
+    /// each provider remembers its own choice rather than sharing one.
+    @UserDefault(key: "huggingFaceModel", defaultValue: "whisper-large-v3-turbo")
+    var huggingFaceModel: String
+
+    @UserDefault(key: "openRouterModel", defaultValue: "whisper-large-v3-turbo")
+    var openRouterModel: String
+
+    @UserDefault(key: "huggingFaceCleanupModel", defaultValue: "llama-8b")
+    var huggingFaceCleanupModel: String
+
+    @UserDefault(key: "openRouterCleanupModel", defaultValue: "gemini-flash")
+    var openRouterCleanupModel: String
 
     @UserDefault(key: "cloudflareCleanupEnabled", defaultValue: false)
     var cloudflareCleanupEnabled: Bool
@@ -169,7 +203,116 @@ def patch_settings() -> None:
         """    var supportedLanguages: [String] {
         LanguageUtil.supportedLanguages(engine: selectedEngine, fluidAudioModelVersion: fluidAudioModelVersion)
     }""",
-        """    @Published var cloudflareEndpoint: String {
+        """    /// Which cloud transcribes. Cloudflare is the default and its
+    /// controls are the only ones shown for it, so nothing about that path
+    /// changed when the other two arrived.
+    @Published var cloudProvider: String {
+        didSet {
+            AppPreferences.shared.cloudProvider = cloudProvider
+            cloudflareTestStatus = .idle
+            // The new provider's models and languages differ, so the pickers
+            // must be refilled before the user can pick an impossible pairing.
+            let allowed = LanguageUtil.supportedLanguages(
+                engine: selectedEngine, fluidAudioModelVersion: fluidAudioModelVersion)
+            if !allowed.contains(selectedLanguage) {
+                selectedLanguage = allowed.first ?? "auto"
+            }
+            Task { @MainActor in TranscriptionService.shared.reloadEngine() }
+            NotificationCenter.default.post(name: .appPreferencesCloudflareMenuChanged, object: nil)
+        }
+    }
+
+    var cloudProviderCase: CloudProvider { CloudProvider.named(cloudProvider) }
+    var cloudFeatures: CloudProviderFeatures { CloudProviderFeatures.of(cloudProviderCase) }
+
+    /// The models the selected provider can actually encode.
+    var cloudModels: [CloudModel] { CloudProviderSelection.catalog(for: cloudProviderCase) }
+    var cloudCleanupModels: [(key: String, id: String, label: String)] {
+        CloudProviderSelection.cleanupModels(for: cloudProviderCase)
+    }
+
+    /// One binding for whichever provider's model is being edited, so the
+    /// picker does not need a branch per provider.
+    var cloudModelSelection: String {
+        get { CloudProviderSelection.modelKey(for: cloudProviderCase) }
+        set {
+            switch cloudProviderCase {
+            case .cloudflare: cloudflareModel = newValue
+            case .huggingface: huggingFaceModel = newValue
+            case .openrouter: openRouterModel = newValue
+            }
+        }
+    }
+
+    var cloudCleanupModelSelection: String {
+        get { CloudProviderSelection.cleanupModelKey(for: cloudProviderCase) }
+        set {
+            switch cloudProviderCase {
+            case .cloudflare: cloudflareCleanupModel = newValue
+            case .huggingface: huggingFaceCleanupModel = newValue
+            case .openrouter: openRouterCleanupModel = newValue
+            }
+        }
+    }
+
+    var cloudProviderKey: String {
+        get {
+            switch cloudProviderCase {
+            case .cloudflare: return cloudflareDirectAPIToken
+            case .huggingface: return huggingFaceAPIToken
+            case .openrouter: return openRouterAPIToken
+            }
+        }
+        set {
+            switch cloudProviderCase {
+            case .cloudflare: cloudflareDirectAPIToken = newValue
+            case .huggingface: huggingFaceAPIToken = newValue
+            case .openrouter: openRouterAPIToken = newValue
+            }
+        }
+    }
+
+    @Published var huggingFaceAPIToken: String {
+        didSet { AppPreferences.shared.huggingFaceAPIToken = huggingFaceAPIToken }
+    }
+
+    @Published var openRouterAPIToken: String {
+        didSet { AppPreferences.shared.openRouterAPIToken = openRouterAPIToken }
+    }
+
+    @Published var huggingFaceModel: String {
+        didSet {
+            AppPreferences.shared.huggingFaceModel = huggingFaceModel
+            narrowLanguageToSelectedCloudModel()
+        }
+    }
+
+    @Published var openRouterModel: String {
+        didSet {
+            AppPreferences.shared.openRouterModel = openRouterModel
+            narrowLanguageToSelectedCloudModel()
+        }
+    }
+
+    @Published var huggingFaceCleanupModel: String {
+        didSet { AppPreferences.shared.huggingFaceCleanupModel = huggingFaceCleanupModel }
+    }
+
+    @Published var openRouterCleanupModel: String {
+        didSet { AppPreferences.shared.openRouterCleanupModel = openRouterCleanupModel }
+    }
+
+    /// A newly selected model may not accept the language the old one did.
+    private func narrowLanguageToSelectedCloudModel() {
+        let allowed = LanguageUtil.supportedLanguages(
+            engine: selectedEngine, fluidAudioModelVersion: fluidAudioModelVersion)
+        if !allowed.contains(selectedLanguage) {
+            selectedLanguage = allowed.first ?? "auto"
+        }
+        NotificationCenter.default.post(name: .appPreferencesCloudflareMenuChanged, object: nil)
+    }
+
+    @Published var cloudflareEndpoint: String {
         didSet { AppPreferences.shared.cloudflareEndpoint = cloudflareEndpoint }
     }
 
@@ -262,11 +405,18 @@ def patch_settings() -> None:
         cloudflareTestStatus = .testing
         Task { @MainActor in
             do {
-                if cloudflareConnectionMode == "direct" {
-                    try await refreshCloudflareAccountsForTest()
+                if cloudProviderCase == .cloudflare {
+                    if cloudflareConnectionMode == "direct" {
+                        try await refreshCloudflareAccountsForTest()
+                    }
+                    let models = try await CloudflareEngine.client.validateConnection()
+                    cloudflareTestStatus = .ok("Connected. \(models.count) models available.")
+                } else {
+                    // Reports a rejected key, an unreachable host, and a
+                    // refused request as three different messages.
+                    let models = try await CloudflareEngine.transcriber.validateConnection()
+                    cloudflareTestStatus = .ok("Connected to \(cloudProviderCase.label). \(models.count) models available.")
                 }
-                let models = try await CloudflareEngine.client.validateConnection()
-                cloudflareTestStatus = .ok("Connected. \(models.count) models available.")
                 TranscriptionService.shared.reloadEngine()
             } catch {
                 cloudflareTestStatus = .failed(error.localizedDescription)
@@ -286,14 +436,21 @@ def patch_settings() -> None:
         self.fluidAudioModelVersion = prefs.fluidAudioModelVersion""",
         """        self.selectedEngine = prefs.selectedEngine
         self.fluidAudioModelVersion = prefs.fluidAudioModelVersion
+        self.cloudProvider = prefs.cloudProvider
         self.cloudflareEndpoint = prefs.cloudflareEndpoint
         self.cloudflareConnectionMode = prefs.cloudflareConnectionMode
         self.cloudflareAccountID = prefs.cloudflareAccountID
         self.cloudflareAuthToken = prefs.cloudflareAuthToken
         self.cloudflareDirectAPIToken = prefs.cloudflareDirectAPIToken
+        self.huggingFaceAPIToken = prefs.huggingFaceAPIToken
+        self.openRouterAPIToken = prefs.openRouterAPIToken
         self.cloudflareModel = prefs.cloudflareModel
+        self.huggingFaceModel = prefs.huggingFaceModel
+        self.openRouterModel = prefs.openRouterModel
         self.cloudflareCleanupEnabled = prefs.cloudflareCleanupEnabled
         self.cloudflareCleanupModel = prefs.cloudflareCleanupModel
+        self.huggingFaceCleanupModel = prefs.huggingFaceCleanupModel
+        self.openRouterCleanupModel = prefs.openRouterCleanupModel
         self.cloudflareCompressionRate = prefs.cloudflareCompressionRate""",
         "Settings: init",
     )
@@ -324,6 +481,204 @@ def patch_settings() -> None:
         path,
         """    private var modelSettings: some View {""",
         '''    private var cloudflareSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Provider")
+                .font(.headline)
+            Picker("Provider", selection: $viewModel.cloudProvider) {
+                ForEach(CloudProvider.allCases, id: \\.rawValue) { provider in
+                    Text(provider.label).tag(provider.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if viewModel.cloudProviderCase == .cloudflare {
+                cloudflareConnectionSettings
+            } else {
+                otherProviderSettings
+            }
+
+            Text("Transcription Model")
+                .font(.headline)
+            Picker("Model", selection: Binding(
+                get: { viewModel.cloudModelSelection },
+                set: { viewModel.cloudModelSelection = $0 }
+            )) {
+                ForEach(viewModel.cloudModels, id: \\.key) { model in
+                    Text(cloudModelLabel(model)).tag(model.key)
+                }
+            }
+            .labelsHidden()
+
+            if let notes = viewModel.cloudModels.first(where: { $0.key == viewModel.cloudModelSelection })?.notes,
+               !notes.isEmpty {
+                Text(notes)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if viewModel.cloudProviderCase == .cloudflare, viewModel.cloudflareModel == "whisper" {
+                Label(
+                    "Whisper base ignores the language setting and detects per clip, so short audio can come back in the wrong language.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+            }
+
+            Picker("Audio speed", selection: $viewModel.cloudflareCompressionRate) {
+                Text("1").tag(1.0)
+                Text("1.25").tag(1.25)
+                Text("1.5").tag(1.5)
+                Text("1.75").tag(1.75)
+                Text("2").tag(2.0)
+                Text("2.25").tag(2.25)
+                Text("2.5").tag(2.5)
+                Text("2.75").tag(2.75)
+                Text("3").tag(3.0)
+            }
+            Text("Speeds up cloud uploads while preserving pitch. Higher speeds lower cost but can reduce accuracy. Applied on this Mac, so every provider honors it.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+
+            Toggle("Clean up dictation with an LLM", isOn: $viewModel.cloudflareCleanupEnabled)
+                .disabled(!viewModel.cloudFeatures.cleanup.isSupported)
+
+            if let reason = viewModel.cloudFeatures.cleanup.reason {
+                unavailableNote(reason)
+            } else if viewModel.cloudflareCleanupEnabled {
+                Picker("Cleanup model", selection: Binding(
+                    get: { viewModel.cloudCleanupModelSelection },
+                    set: { viewModel.cloudCleanupModelSelection = $0 }
+                )) {
+                    ForEach(viewModel.cloudCleanupModels, id: \\.key) { model in
+                        Text(model.label).tag(model.key)
+                    }
+                }
+                Text("Adds roughly 3 seconds. Removes filler words and fixes punctuation. Runs on the selected provider's own text models.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+
+            HStack(spacing: 10) {
+                Button("Test Connection") {
+                    viewModel.testCloudflareConnection()
+                }
+
+                switch viewModel.cloudflareTestStatus {
+                case .idle:
+                    EmptyView()
+                case .testing:
+                    ProgressView()
+                        .controlSize(.small)
+                case .ok(let message):
+                    Label(message, systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.caption)
+                case .failed(let message):
+                    Label(message, systemImage: "xmark.circle.fill")
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.top, 4)
+
+            cloudFeatureNotes
+        }
+        .padding(.vertical, 8)
+        .onAppear {
+            if viewModel.cloudProviderCase == .cloudflare, viewModel.cloudflareConnectionMode == "direct" {
+                viewModel.discoverCloudflareAccounts()
+            }
+        }
+    }
+
+    /// What the selected provider cannot do, each with the reason. A feature
+    /// that cannot reach the model is stated here rather than being accepted
+    /// in the UI and dropped on the wire.
+    @ViewBuilder
+    private var cloudFeatureNotes: some View {
+        let features = viewModel.cloudFeatures
+        VStack(alignment: .leading, spacing: 6) {
+            if let reason = features.language.reason {
+                unavailableNote("Language pinning is unavailable. " + reason)
+            } else {
+                Text("Language lives in the Transcription tab.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            if let reason = features.vocabulary.reason {
+                unavailableNote("Vocabulary boosting is unavailable. " + reason + " The cleanup pass still receives the list as known spellings.")
+            } else {
+                Text("Vocabulary lives in the Transcription tab. Nova-3 boosts those terms only when a language is pinned.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            if let reason = features.usage.reason {
+                unavailableNote(reason)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func unavailableNote(_ text: String) -> some View {
+        Label(text, systemImage: "info.circle")
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func cloudModelLabel(_ model: CloudModel) -> String {
+        model.label == model.key ? cloudflareModelLabels[model.key] ?? model.key : model.label
+    }
+
+    /// The Cloudflare registry carries no display names, so the ones the picker
+    /// has always shown stay here rather than changing what users read.
+    private var cloudflareModelLabels: [String: String] {
+        [
+            "nova-3": "Nova-3 (fast, accurate)",
+            "whisper-turbo": "Whisper turbo (cheapest)",
+            "whisper": "Whisper base",
+            "whisper-tiny-en": "Whisper tiny (English only)",
+        ]
+    }
+
+    /// The other providers need one key and nothing else: no account to
+    /// discover, no endpoint to deploy, no neuron budget to watch.
+    private var otherProviderSettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button("Create \\(viewModel.cloudProviderCase.label) API key") {
+                if let url = URL(string: viewModel.cloudProviderCase.tokenPageURL) {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+
+            SecureField(
+                viewModel.cloudProviderCase.keyFieldPrompt,
+                text: Binding(
+                    get: { viewModel.cloudProviderKey },
+                    set: { viewModel.cloudProviderKey = $0 }
+                )
+            )
+            .textFieldStyle(.roundedBorder)
+
+            Text("Stored in this Mac's Keychain under its own entry, so switching provider never overwrites another key.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var cloudflareConnectionSettings: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Connection")
                 .font(.headline)
@@ -360,91 +715,6 @@ def patch_settings() -> None:
                     .font(.headline)
                 SecureField("Bearer token", text: $viewModel.cloudflareAuthToken)
                     .textFieldStyle(.roundedBorder)
-            }
-
-            Text("Transcription Model")
-                .font(.headline)
-            Picker("Model", selection: $viewModel.cloudflareModel) {
-                Text("Nova-3 (fast, accurate)").tag("nova-3")
-                Text("Whisper turbo (cheapest)").tag("whisper-turbo")
-                Text("Whisper base").tag("whisper")
-                Text("Whisper tiny (English only)").tag("whisper-tiny-en")
-            }
-            .labelsHidden()
-
-            if viewModel.cloudflareModel == "whisper" {
-                Label(
-                    "Whisper base ignores the language setting and detects per clip, so short audio can come back in the wrong language.",
-                    systemImage: "exclamationmark.triangle.fill"
-                )
-                .font(.caption)
-                .foregroundStyle(.orange)
-            }
-
-            Picker("Audio speed", selection: $viewModel.cloudflareCompressionRate) {
-                Text("1").tag(1.0)
-                Text("1.25").tag(1.25)
-                Text("1.5").tag(1.5)
-                Text("1.75").tag(1.75)
-                Text("2").tag(2.0)
-                Text("2.25").tag(2.25)
-                Text("2.5").tag(2.5)
-                Text("2.75").tag(2.75)
-                Text("3").tag(3.0)
-            }
-            Text("Speeds up cloud uploads while preserving pitch. Higher speeds lower cost but can reduce accuracy.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-
-            Divider()
-
-            Toggle("Clean up dictation with an LLM", isOn: $viewModel.cloudflareCleanupEnabled)
-
-            if viewModel.cloudflareCleanupEnabled {
-                Picker("Cleanup model", selection: $viewModel.cloudflareCleanupModel) {
-                    Text("Llama 3.1 8B").tag("llama-8b")
-                    Text("Llama 3.2 3B (fastest)").tag("llama-3b")
-                    Text("Granite 4.0 Micro").tag("granite-micro")
-                    Text("Mistral Small 24B").tag("mistral-24b")
-                }
-                Text("Adds roughly 3 seconds. Removes filler words and fixes punctuation.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            Divider()
-
-            HStack(spacing: 10) {
-                Button("Test Connection") {
-                    viewModel.testCloudflareConnection()
-                }
-
-                switch viewModel.cloudflareTestStatus {
-                case .idle:
-                    EmptyView()
-                case .testing:
-                    ProgressView()
-                        .controlSize(.small)
-                case .ok(let message):
-                    Label(message, systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                        .font(.caption)
-                case .failed(let message):
-                    Label(message, systemImage: "xmark.circle.fill")
-                        .foregroundStyle(.red)
-                        .font(.caption)
-                }
-            }
-            .padding(.top, 4)
-
-            Text("Vocabulary lives in the Transcription tab. Nova-3 boosts those terms only when a language is pinned.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-        .padding(.vertical, 8)
-        .onAppear {
-            if viewModel.cloudflareConnectionMode == "direct" {
-                viewModel.discoverCloudflareAccounts()
             }
         }
     }
@@ -558,16 +828,24 @@ class AppState: ObservableObject {
     settings = APP / "Settings.swift"
     patch(
         settings,
-        '''            Text("Vocabulary lives in the Transcription tab. Nova-3 boosts those terms only when a language is pinned.")''',
-        '''            Button("Run setup again") {
-                dismiss()
-                DispatchQueue.main.async {
-                    NotificationCenter.default.post(name: .showCloudflareSetup, object: nil)
+        """            cloudFeatureNotes
+        }
+        .padding(.vertical, 8)""",
+        '''            // The setup flow proves a Cloudflare Direct API token by
+            // transcribing a live recording, so it is offered only there.
+            if viewModel.cloudProviderCase == .cloudflare {
+                Button("Run setup again") {
+                    dismiss()
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(name: .showCloudflareSetup, object: nil)
+                    }
                 }
+                .buttonStyle(.link)
             }
-            .buttonStyle(.link)
 
-            Text("Vocabulary lives in the Transcription tab. Nova-3 boosts those terms only when a language is pinned.")''',
+            cloudFeatureNotes
+        }
+        .padding(.vertical, 8)''',
         "Settings: rerun Cloudflare setup",
     )
 
@@ -672,11 +950,12 @@ def patch_menu_bar() -> None:
         (
             "    private var hideMainWindowAtLaunch = false\n"
             "    private var cloudflareMenuPreferencesObserver: NSObjectProtocol?\n"
-            "    private let cloudflareModels = [\n"
-            "        (key: \"nova-3\", label: \"Deepgram Nova-3\"),\n"
-            "        (key: \"whisper-turbo\", label: \"Whisper large-v3-turbo\"),\n"
-            "        (key: \"whisper\", label: \"Whisper (base)\"),\n"
-            "        (key: \"whisper-tiny-en\", label: \"Whisper tiny (English)\"),\n"
+            "    /// Display names for the Cloudflare registry, which carries none.\n"
+            "    private let cloudflareModelLabels = [\n"
+            "        \"nova-3\": \"Deepgram Nova-3\",\n"
+            "        \"whisper-turbo\": \"Whisper large-v3-turbo\",\n"
+            "        \"whisper\": \"Whisper (base)\",\n"
+            "        \"whisper-tiny-en\": \"Whisper tiny (English)\",\n"
             "    ]\n"
             "    private let cloudflareCompressionRates = [\n"
             "        (value: 1.0, label: \"1\"),\n"
@@ -753,14 +1032,19 @@ def patch_menu_bar() -> None:
         '''    private func addCloudflareQuickControls(to menu: NSMenu) {
         let prefs = AppPreferences.shared
         let cloudflareIsActive = prefs.selectedEngine == "cloudflare"
+        let provider = CloudProviderSelection.current
+        let selectedModel = CloudProviderSelection.modelKey(for: provider)
 
+        // The menu follows the selected provider's registry, so it can never
+        // offer a model that provider has no wire form for.
         let modelItem = NSMenuItem(title: "Model", action: nil, keyEquivalent: "")
         let modelMenu = NSMenu()
-        for model in cloudflareModels {
-            let item = NSMenuItem(title: model.label, action: #selector(selectCloudflareModel(_:)), keyEquivalent: "")
+        for model in CloudProviderSelection.catalog(for: provider) {
+            let title = model.label == model.key ? (cloudflareModelLabels[model.key] ?? model.key) : model.label
+            let item = NSMenuItem(title: title, action: #selector(selectCloudflareModel(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = model.key
-            item.state = prefs.cloudflareModel == model.key ? .on : .off
+            item.state = selectedModel == model.key ? .on : .off
             item.isEnabled = cloudflareIsActive
             modelMenu.addItem(item)
         }
@@ -785,7 +1069,9 @@ def patch_menu_bar() -> None:
         let cleanupItem = NSMenuItem(title: "LLM cleanup", action: #selector(toggleCloudflareCleanup(_:)), keyEquivalent: "")
         cleanupItem.target = self
         cleanupItem.state = prefs.cloudflareCleanupEnabled ? .on : .off
-        cleanupItem.isEnabled = cloudflareIsActive
+        // Greyed out rather than silently doing nothing on a provider whose
+        // text models this app cannot reach.
+        cleanupItem.isEnabled = cloudflareIsActive && CloudProviderFeatures.of(provider).cleanup.isSupported
         menu.addItem(cleanupItem)
 
         menu.addItem(NSMenuItem.separator())
@@ -795,7 +1081,13 @@ def patch_menu_bar() -> None:
         guard let model = sender.representedObject as? String else { return }
 
         let prefs = AppPreferences.shared
-        prefs.cloudflareModel = model
+        // Each provider remembers its own model, so the menu writes the key
+        // back to the provider that published it.
+        switch CloudProviderSelection.current {
+        case .cloudflare: prefs.cloudflareModel = model
+        case .huggingface: prefs.huggingFaceModel = model
+        case .openrouter: prefs.openRouterModel = model
+        }
         let supportedLanguages = LanguageUtil.supportedLanguages(
             engine: "cloudflare",
             fluidAudioModelVersion: prefs.fluidAudioModelVersion
@@ -987,20 +1279,12 @@ def patch_language_util() -> None:
     }
 
     /// Cloud models disagree about languages: Nova-3 on Cloudflare accepts ten
-    /// and hard errors on the rest, whisper-tiny-en is English only, and
-    /// Whisper base discards the setting entirely. Offering one list for all of
-    /// them produces failed dictations, so the worker's per-model list wins.
+    /// and hard errors on the rest, whisper-tiny-en is English only, Whisper
+    /// base discards the setting entirely, and Hugging Face's speech pipeline
+    /// refuses a language parameter outright. Offering one list for all of them
+    /// produces failed dictations, so the selected provider's list wins.
     static func cloudflareLanguages() -> [String] {
-        let model = AppPreferences.shared.cloudflareModel
-        guard
-            let data = AppPreferences.shared.cloudflareModelLanguages.data(using: .utf8),
-            let map = try? JSONDecoder().decode([String: [String]].self, from: data),
-            let allowed = map[model]
-        else { return availableLanguages }
-
-        if allowed.contains("*") { return availableLanguages }
-        if allowed.isEmpty { return ["auto"] }
-        return ["auto"] + allowed.filter { availableLanguages.contains($0) }
+        CloudProviderSelection.supportedLanguages(available: availableLanguages)
     }""",
         "LanguageUtil: per-model languages",
     )
@@ -1070,7 +1354,11 @@ def patch_content_view() -> None:
                                 }
                                 .padding(.leading, 4)
 
-                                if AppPreferences.shared.selectedEngine == "cloudflare" {
+                                // Neurons are a Cloudflare billing unit, so the
+                                // readout is hidden rather than shown empty on
+                                // a provider that has none.
+                                if AppPreferences.shared.selectedEngine == "cloudflare",
+                                   CloudProviderSelection.current == .cloudflare {
                                     CloudflareUsageView(refreshToken: viewModel.recordings.count)
                                 }
                             }""",
