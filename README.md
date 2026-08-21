@@ -41,6 +41,40 @@ You do **not** need to deploy a Worker. The app can call Workers AI in your Clou
 - **Transcription > Vocabulary.** A comma separated term list, not prose. `R2, Kubernetes, Workers AI`. It measurably fixes proper nouns.
 - **Cloudflare > Audio speed.** Choose `1`, `1.25`, `1.5`, `1.75`, `2`, `2.25`, `2.5`, `2.75`, or `3`; default `1` uploads the original recording unchanged. Higher speeds preserve pitch and cut billed audio minutes, but trade accuracy for cost - see the measured WER deltas in [asr-compression-cost](https://github.com/Albatross679/asr-compression-cost). 1.5 is recommended.
 
+## Other providers
+
+Cloudflare is the default and the cheapest, but the same app can transcribe through **Hugging Face** or **OpenRouter** instead. Pick one under **Settings > Models > Engine > Provider**. Each provider keeps its own API key in its own Keychain entry, so switching never overwrites another key, and **Test Connection** works for all three.
+
+### Hugging Face
+
+1. Create a fine-grained access token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens/new?ownUserPermissions=inference.serverless.write&tokenType=fineGrained) with the **Make calls to Inference Providers** permission.
+2. Paste it into the key field. There is no account or endpoint to configure.
+
+Models are `openai/whisper-large-v3-turbo` (default) and `openai/whisper-large-v3`. Those are the only two speech models the `hf-inference` provider serves warm; every other Whisper size answers "Model not supported by provider hf-inference", so the picker does not offer one.
+
+Cost: Inference Providers bills per request against a free monthly credit allowance, with more credit on PRO. See [the pricing page](https://huggingface.co/docs/inference-providers/pricing) for current rates.
+
+### OpenRouter
+
+1. Create a key at [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) and add credit.
+2. Paste it into the key field.
+
+Models are `openai/whisper-large-v3-turbo` (default), `openai/whisper-large-v3`, `deepgram/nova-3`, `openai/gpt-4o-mini-transcribe`, and `openai/gpt-4o-transcribe`. OpenRouter serves 19 speech-to-text models in total; this list covers the three reasons to switch, which are matching the Cloudflare default, lowest cost, and highest accuracy.
+
+Cost: pay per request with no subscription, at each upstream provider's rate plus OpenRouter's fee. Every response reports its own `usage.cost`, and the [activity page](https://openrouter.ai/activity) is the authority. Recordings are capped at 25 MB and upstream providers time out after about 60 seconds.
+
+### What each provider can do
+
+| | Cloudflare | Hugging Face | OpenRouter |
+|---|---|---|---|
+| Language pinning | yes, per model | **no**, the speech pipeline rejects a language parameter | yes, ISO-639-1 |
+| Vocabulary boosting | yes, on Nova-3 and Whisper turbo | **no**, the pipeline takes no decoder prompt | **no**, the endpoint has no prompt field |
+| Audio speed | yes | yes | yes |
+| LLM cleanup | yes, on Workers AI | yes, on the HF router | yes, on OpenRouter |
+| Neuron usage readout | yes | no, not a Cloudflare account | no, not a Cloudflare account |
+
+Where a feature says no, the app disables the control and prints the reason next to it rather than accepting the setting and dropping it. Audio speed is applied on your Mac before the upload, so every provider honors it. The vocabulary list still reaches the cleanup pass as known spellings even where the recognizer cannot use it.
+
 ## Structure
 
 ```text
@@ -48,7 +82,7 @@ src/
 ├── index.js      router and auth gate
 ├── api/          request handling, auth, usage counter
 ├── core/         model registry, cleanup, vocabulary, language, metering
-└── client/       the Swift engine added to OpenSuperWhisper
+└── client/       the Swift engine added to OpenSuperWhisper, one file per provider
 
 scripts/          patch, build, package, signing identity
 docs/             the detail

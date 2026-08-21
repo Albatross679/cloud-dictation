@@ -36,6 +36,18 @@ enum AuthTokenStore {
         set { write(newValue, account: directAPIAccount) }
     }
 
+    /// One Keychain entry per cloud provider, named by
+    /// `CloudProvider.keychainAccount`. Separate entries mean switching
+    /// provider never overwrites another vendor's key, and no two providers
+    /// ever read the same secret.
+    static func key(for provider: CloudProvider) -> String {
+        read(account: provider.keychainAccount) ?? ""
+    }
+
+    static func setKey(_ value: String, for provider: CloudProvider) {
+        write(value, account: provider.keychainAccount)
+    }
+
     private static func baseQuery(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,

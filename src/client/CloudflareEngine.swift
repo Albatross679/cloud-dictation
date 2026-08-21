@@ -372,6 +372,113 @@ struct CloudflareClient {
     }
 }
 
+/// `CloudflareClient` already speaks the protocol the engine needs; this only
+/// states it. Nothing above this line changed when the other providers arrived.
+extension CloudflareClient: CloudTranscriber {
+    static var catalog: [CloudModel] {
+        CloudflareDirectRequest.modelKeys.compactMap { key in
+            CloudflareDirectRequest.models[key].map {
+                CloudModel(key: key, id: $0.id, label: key, languages: $0.languages, notes: "")
+            }
+        }
+    }
+}
+
+/// Reads the current provider and its per-provider settings.
+///
+/// Each provider owns its own model, cleanup model, and Keychain key, because a
+/// model key is only meaningful to the vendor that publishes it: switching to
+/// Hugging Face must not leave "nova-3" selected, and switching back must not
+/// have lost the Cloudflare choice.
+enum CloudProviderSelection {
+    static var current: CloudProvider {
+        CloudProvider.named(AppPreferences.shared.cloudProvider)
+    }
+
+    static var features: CloudProviderFeatures { CloudProviderFeatures.of(current) }
+
+    static func catalog(for provider: CloudProvider) -> [CloudModel] {
+        switch provider {
+        case .cloudflare: return CloudflareClient.catalog
+        case .huggingface: return HuggingFaceClient.catalog
+        case .openrouter: return OpenRouterClient.catalog
+        }
+    }
+
+    static func cleanupModels(for provider: CloudProvider) -> [(key: String, id: String, label: String)] {
+        switch provider {
+        case .cloudflare:
+            return [
+                (key: "llama-8b", id: "@cf/meta/llama-3.1-8b-instruct-fp8", label: "Llama 3.1 8B"),
+                (key: "llama-3b", id: "@cf/meta/llama-3.2-3b-instruct", label: "Llama 3.2 3B (fastest)"),
+                (key: "granite-micro", id: "@cf/ibm-granite/granite-4.0-h-micro", label: "Granite 4.0 Micro"),
+                (key: "mistral-24b", id: "@cf/mistralai/mistral-small-3.1-24b-instruct", label: "Mistral Small 24B"),
+            ]
+        case .huggingface: return HuggingFaceRequest.cleanupModels
+        case .openrouter: return OpenRouterRequest.cleanupModels
+        }
+    }
+
+    /// The model key for a provider, falling back to that provider's default
+    /// when the stored value belongs to a different vendor's catalogue.
+    static func modelKey(for provider: CloudProvider) -> String {
+        let prefs = AppPreferences.shared
+        let stored: String
+        let fallback: String
+        switch provider {
+        case .cloudflare:
+            stored = prefs.cloudflareModel
+            fallback = "nova-3"
+        case .huggingface:
+            stored = prefs.huggingFaceModel
+            fallback = HuggingFaceRequest.defaultModelKey
+        case .openrouter:
+            stored = prefs.openRouterModel
+            fallback = OpenRouterRequest.defaultModelKey
+        }
+        return catalog(for: provider).contains(where: { $0.key == stored }) ? stored : fallback
+    }
+
+    static func cleanupModelKey(for provider: CloudProvider) -> String {
+        let prefs = AppPreferences.shared
+        let stored: String
+        switch provider {
+        case .cloudflare: stored = prefs.cloudflareCleanupModel
+        case .huggingface: stored = prefs.huggingFaceCleanupModel
+        case .openrouter: stored = prefs.openRouterCleanupModel
+        }
+        let models = cleanupModels(for: provider)
+        return models.contains(where: { $0.key == stored }) ? stored : (models.first?.key ?? stored)
+    }
+
+    /// Languages the picker may offer for the current provider and model.
+    ///
+    /// A provider that cannot pin a language at all offers only auto, so the
+    /// picker never implies a setting the request will drop.
+    static func supportedLanguages(available: [String]) -> [String] {
+        let provider = current
+        guard features.language.isSupported else { return ["auto"] }
+
+        if provider == .cloudflare {
+            // Unchanged: the Worker's cached per-model list stays authoritative.
+            guard
+                let data = AppPreferences.shared.cloudflareModelLanguages.data(using: .utf8),
+                let map = try? JSONDecoder().decode([String: [String]].self, from: data),
+                let allowed = map[AppPreferences.shared.cloudflareModel]
+            else { return available }
+            if allowed.contains("*") { return available }
+            if allowed.isEmpty { return ["auto"] }
+            return ["auto"] + allowed.filter { available.contains($0) }
+        }
+
+        let key = modelKey(for: provider)
+        guard let model = catalog(for: provider).first(where: { $0.key == key }) else { return available }
+        guard let languages = model.languages else { return available }
+        if languages.isEmpty { return ["auto"] }
+        return ["auto"] + languages.filter { available.contains($0) }
+    }
+}
+
 /// AVAudioPlayerNode invokes its completion handler from the render thread.
 /// This small lock makes that signal safe to inspect from the upload task.
 private final class CloudflarePlaybackCompletion: @unchecked Sendable {
@@ -501,7 +608,7 @@ private enum CloudflareAudioCompressor {
 /// Audio never touches a local model: the recorded WAV is uploaded and the
 /// worker returns the finished text.
 class CloudflareEngine: TranscriptionEngine {
-    var engineName: String { "Cloudflare" }
+    var engineName: String { CloudProviderSelection.current.label }
 
     private var reachable = false
     private var isCancelled = false
@@ -512,6 +619,8 @@ class CloudflareEngine: TranscriptionEngine {
 
     var isModelLoaded: Bool { reachable }
 
+    /// The Cloudflare connection, unchanged. Still used directly by the account
+    /// picker and the usage readout, which are Cloudflare-only by nature.
     static var client: CloudflareClient {
         let prefs = AppPreferences.shared
         return CloudflareClient(
@@ -522,7 +631,32 @@ class CloudflareEngine: TranscriptionEngine {
         )
     }
 
+    /// Whichever cloud is selected. Cloudflare returns the exact client above,
+    /// so that path is byte-for-byte what it was before providers existed.
+    static var transcriber: CloudTranscriber {
+        switch CloudProviderSelection.current {
+        case .cloudflare:
+            return client
+        case .huggingface:
+            return HuggingFaceClient(token: AuthTokenStore.key(for: .huggingface))
+        case .openrouter:
+            return OpenRouterClient(token: AuthTokenStore.key(for: .openrouter))
+        }
+    }
+
     func initialize() async throws {
+        guard CloudProviderSelection.current == .cloudflare else {
+            // The other providers publish no catalog route, so the picker reads
+            // their local registry directly through
+            // CloudProviderSelection.supportedLanguages. Nothing is cached: the
+            // cache below is keyed by Cloudflare's model names, and writing
+            // another vendor's keys into it would leave Nova-3 offering the
+            // languages it hard errors on the next time Cloudflare is selected
+            // while offline.
+            reachable = true
+            return
+        }
+
         // Cache each model's language list so the picker offers only what the
         // selected model accepts. Nova-3 hard errors on an unsupported code.
         let entries = try await Self.client.catalog()
@@ -566,7 +700,7 @@ class CloudflareEngine: TranscriptionEngine {
         }
 
         let task = Task { () throws -> String in
-            try await Self.client.transcribe(fileURL: uploadURL, query: Self.query(settings: settings))
+            try await Self.transcriber.transcribe(fileURL: uploadURL, query: Self.query(settings: settings))
         }
 
         uploadTask = task
@@ -600,24 +734,42 @@ class CloudflareEngine: TranscriptionEngine {
         )
     }
 
+    /// One query vocabulary for every provider, so each client reads the same
+    /// setting names rather than inventing its own. Which of them a provider
+    /// can honour is declared in `CloudProviderFeatures`, and a provider that
+    /// cannot honour one never receives it.
     private static func query(settings: Settings) -> [URLQueryItem] {
         let prefs = AppPreferences.shared
+        let provider = CloudProviderSelection.current
+        let features = CloudProviderFeatures.of(provider)
+
         var items = [
-            URLQueryItem(name: "model", value: prefs.cloudflareModel),
-            URLQueryItem(name: "language", value: settings.selectedLanguage),
+            URLQueryItem(name: "model", value: CloudProviderSelection.modelKey(for: provider)),
+            URLQueryItem(
+                name: "language",
+                // A provider that cannot pin a language gets auto rather than a
+                // code it would reject outright.
+                value: features.language.isSupported ? settings.selectedLanguage : "auto"
+            ),
         ]
 
         // Settings > Transcription > Vocabulary, a comma separated term list.
         // Nova-3 boosts the terms directly, Whisper takes them as a decoder
-        // glossary, and the cleanup pass uses them as known spellings.
+        // glossary, and the cleanup pass uses them as known spellings. On a
+        // provider whose recognizer cannot take terms the list is still sent,
+        // because the cleanup pass reads it as known spellings; the settings
+        // pane says so rather than implying the recognizer sees it.
         let vocabulary = settings.initialPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         if !vocabulary.isEmpty {
             items.append(URLQueryItem(name: "vocabulary", value: vocabulary))
         }
 
-        if prefs.cloudflareCleanupEnabled {
+        if prefs.cloudflareCleanupEnabled, features.cleanup.isSupported {
             items.append(URLQueryItem(name: "cleanup", value: "1"))
-            items.append(URLQueryItem(name: "cleanup_model", value: prefs.cloudflareCleanupModel))
+            items.append(URLQueryItem(
+                name: "cleanup_model",
+                value: CloudProviderSelection.cleanupModelKey(for: provider)
+            ))
         }
 
         return items
