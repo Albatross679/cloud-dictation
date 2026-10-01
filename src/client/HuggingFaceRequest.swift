@@ -40,14 +40,14 @@ enum HuggingFaceRequest {
             // Whisper's full multilingual range, but it is always auto-detected
             // because the pipeline refuses a language parameter.
             languages: [],
-            notes: "Faster and cheaper than large-v3, with slightly lower accuracy."
+            notes: "Whisper turbo weights with automatic language detection."
         ),
         CloudModel(
             key: "whisper-large-v3",
             id: "openai/whisper-large-v3",
             label: "Whisper large-v3",
             languages: [],
-            notes: "The most accurate Whisper weights Hugging Face serves warm."
+            notes: "Whisper large-v3 weights with automatic language detection."
         ),
     ]
 
@@ -159,7 +159,7 @@ struct HuggingFaceClient: CloudTranscriber {
         return cleaned
     }
 
-    /// One real inference against the selected model. There is no
+    /// One real inference against the default model. There is no
     /// credential-only ASR route, and `/api/whoami-v2` proves the token exists
     /// without proving it may call Inference Providers, so the check that
     /// matters is the call the engine will actually make.

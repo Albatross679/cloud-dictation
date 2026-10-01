@@ -1,6 +1,6 @@
 # Choosing a model
 
-Cloudflare is the default provider and the rest of this page is about it. Two others are available under Settings > Models > Engine > Provider; skip to [Other providers](#other-providers) for what they can and cannot do.
+Cloudflare is the default provider and the rest of this page is about it. The single Settings > Models > Engine bar also offers Hugging Face and OpenRouter, alongside local Parakeet and Whisper; skip to [Other providers](#other-providers) for what they can and cannot do.
 
 Measured against this account, not quoted from vendor docs.
 
@@ -82,7 +82,7 @@ The counter's window is a **UTC day**, matching when the free tier resets. West 
 
 ## Other providers
 
-Hugging Face and OpenRouter transcribe the same recorded WAV through their own APIs and their own keys. Every claim below came from a live request against the vendor rather than from a docs page, and the encoder tests in `scripts/test_provider_requests.swift` pin the wire shapes.
+Hugging Face and OpenRouter transcribe the same recorded WAV through their own APIs and their own keys. The request shapes and capability constraints below were checked against live endpoints, and `scripts/test_provider_requests.swift` pins the encoders. Current per-model functional results and account gates are in [the functionality check](functionality-check.md).
 
 ### Hugging Face
 
@@ -110,18 +110,18 @@ OpenRouter has had a dedicated speech-to-text endpoint since 2026-05-01, so audi
 | Key | Model | Why |
 |---|---|---|
 | `whisper-large-v3-turbo` | `openai/whisper-large-v3-turbo` | default, cheapest Whisper here |
-| `whisper-large-v3` | `openai/whisper-large-v3` | more accurate Whisper |
+| `whisper-large-v3` | `openai/whisper-large-v3` | full Whisper large-v3 weights |
 | `nova-3` | `deepgram/nova-3` | the same model the Cloudflare default uses |
-| `gpt-4o-mini-transcribe` | `openai/gpt-4o-mini-transcribe` | strong on proper nouns |
-| `gpt-4o-transcribe` | `openai/gpt-4o-transcribe` | most accurate option here |
+| `gpt-4o-mini-transcribe` | `openai/gpt-4o-mini-transcribe` | smaller OpenAI transcription model |
+| `gpt-4o-transcribe` | `openai/gpt-4o-transcribe` | full OpenAI transcription model |
 | `gemini-3.5-transcribe` | `google/gemini-3.5-transcribe` | Google synchronous STT |
 | `fish-audio-transcribe-1-pro` | `fish-audio/transcribe-1-pro` | Fish Audio recorded-speech STT |
 | `assemblyai-universal-3-5-pro` | `assemblyai/universal-3-5-pro` | AssemblyAI synchronous STT |
-| `muse-voice-transcribe-1.0` | `meta/muse-voice-transcribe-1.0` | Meta synchronous STT |
+| `muse-voice-transcribe-1.0` | `meta/muse-voice-transcribe-1.0` | Meta synchronous STT; account may require 18+ confirmation |
 | `mai-transcribe-2` | `microsoft/mai-transcribe-2` | Microsoft multilingual STT |
 | `qwen3-asr-1.7b` | `qwen/qwen3-asr-1.7b` | Qwen multilingual ASR |
 | `qwen3-asr-0.6b` | `qwen/qwen3-asr-0.6b` | compact Qwen multilingual ASR |
-| `gpt-transcribe` | `openai/gpt-transcribe` | OpenAI high-accuracy STT |
+| `gpt-transcribe` | `openai/gpt-transcribe` | OpenAI STT |
 
 For established models, language pinning works where the selected model permits it: `language` takes an ISO-639-1 code and is omitted entirely under auto-detect, because "auto" is not a code. Newly added models intentionally offer auto-detect only until their individual constraints are verified. The OpenRouter STT API does define optional `keyterms`, but support is model/provider-specific; this app does not send it, so it never claims vocabulary boosting. Uploads are capped at 25 MB, which the client checks before encoding so the message names a size rather than surfacing a truncated upload, and upstream providers time out after about 60 seconds. See [OpenRouter's STT reference](https://openrouter.ai/docs/api/api-reference/stt/create-transcription).
 
@@ -137,7 +137,7 @@ All three providers report three outcomes distinctly, because the fix differs fo
 | Host unreachable | transport error | transport error | transport error |
 | Reachable, request refused | API error with its code | 400 with the vendor's message | 400 with the vendor's message |
 
-Hugging Face has no credential-only speech route and `/api/whoami-v2` proves a token exists without proving it may call Inference Providers, so the check is a real transcription of a quarter second of generated silence: the same route a dictation takes. OpenRouter has `GET /api/v1/key`, which costs nothing, so that is used instead.
+Hugging Face has no credential-only speech route and `/api/whoami-v2` proves a token exists without proving it may call Inference Providers, so the check is a real transcription of a quarter second of generated silence: the same route a dictation takes. OpenRouter has `GET /api/v1/key`, which costs nothing, so that is used instead. A successful key check does not prove access to every model. A transcription HTTP 403 names the unavailable model and preserves provider guidance, such as Meta's age-confirmation requirement; it is not reported as an invalid key.
 
 ### Cleanup
 

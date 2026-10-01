@@ -24,8 +24,8 @@ enum CloudProvider: String, CaseIterable, Equatable {
         }
     }
 
-    /// Separate Keychain accounts. A user switching providers must never have
-    /// one vendor's key overwritten by another's, and no key is ever shared.
+    /// Stable credential keys, retained from the legacy Keychain accounts for
+    /// one-time migration. Providers never share or overwrite another key.
     var keychainAccount: String {
         switch self {
         case .cloudflare: return "cloudflareDirectAPIToken"
@@ -48,6 +48,48 @@ enum CloudProvider: String, CaseIterable, Equatable {
         case .cloudflare: return "Workers AI API token"
         case .huggingface: return "Hugging Face access token (hf_...)"
         case .openrouter: return "OpenRouter API key (sk-or-...)"
+        }
+    }
+}
+
+/// One UI choice, decoded from the existing engine/provider preferences.
+/// Keep their persisted schema so old installs and the menu/engine paths stay
+/// compatible. Local choices retain the last cloud provider without using it.
+enum SpeechRecognitionChoice: String, CaseIterable {
+    case parakeet = "fluidaudio"
+    case whisper
+    case cloudflare
+    case huggingface
+    case openrouter
+
+    var label: String {
+        switch self {
+        case .parakeet: return "Parakeet"
+        case .whisper: return "Whisper"
+        case .cloudflare: return "Cloudflare"
+        case .huggingface: return "Hugging Face"
+        case .openrouter: return "OpenRouter"
+        }
+    }
+
+    static func resolve(engine: String, provider: String) -> Self {
+        if engine == "fluidaudio" { return .parakeet }
+        // The engine loader historically uses Whisper for unknown values.
+        guard engine == "cloudflare" else { return .whisper }
+        switch CloudProvider.named(provider) {
+        case .cloudflare: return .cloudflare
+        case .huggingface: return .huggingface
+        case .openrouter: return .openrouter
+        }
+    }
+
+    func persistedSelection(preserving provider: String) -> (engine: String, provider: String) {
+        switch self {
+        case .parakeet: return ("fluidaudio", provider)
+        case .whisper: return ("whisper", provider)
+        case .cloudflare: return ("cloudflare", "cloudflare")
+        case .huggingface: return ("cloudflare", "huggingface")
+        case .openrouter: return ("cloudflare", "openrouter")
         }
     }
 }
@@ -158,6 +200,7 @@ enum CloudProviderError: LocalizedError, Equatable {
     case unreachable(CloudProvider, String)
     case badStatus(CloudProvider, Int, String)
     case emptyTranscript(CloudProvider)
+    case modelUnavailable(CloudProvider, String, String)
     case unknownModel(String)
     case audioTooLarge(CloudProvider, Int, Int)
 
@@ -171,6 +214,8 @@ enum CloudProviderError: LocalizedError, Equatable {
             return "Could not reach \(provider.label)\(Self.suffix(detail))"
         case let .badStatus(provider, code, detail):
             return "\(provider.label) returned \(code)\(Self.suffix(detail))"
+        case let .modelUnavailable(provider, model, detail):
+            return "\(provider.label) model \(model) is unavailable for this account\(Self.suffix(detail))"
         case let .emptyTranscript(provider):
             return "\(provider.label) returned no words. Speak during the recording and try again."
         case let .unknownModel(key):
@@ -232,13 +277,17 @@ enum CloudHTTP {
         }
         let body = String(data: data, encoding: .utf8) ?? ""
         if (200...299).contains(http.statusCode) { return data }
+        throw responseError(provider: provider, status: http.statusCode, body: body)
+    }
+
+    /// 403 can mean a model-specific permission or attestation gate even when
+    /// the same key works for other models. Only 401 proves authentication failed.
+    static func responseError(provider: CloudProvider, status: Int, body: String) -> CloudProviderError {
         let detail = errorMessage(from: body)
-        if http.statusCode == 401 || http.statusCode == 403 {
-            throw CloudProviderError.invalidKey(provider, detail)
-        }
+        if status == 401 { return .invalidKey(provider, detail) }
         // 5xx and 502-from-upstream mean the vendor is up but the model path is
         // not, which is a different fix than a bad key.
-        throw CloudProviderError.badStatus(provider, http.statusCode, detail)
+        return .badStatus(provider, status, detail)
     }
 
     /// Both vendors nest their message differently: Hugging Face returns

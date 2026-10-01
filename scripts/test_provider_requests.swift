@@ -49,6 +49,7 @@ enum ProviderRequestTests {
         noPlanCarriesACredential()
         cleanupIsEncodedTheSameForBoth()
         featureMatrixIsHonest()
+        combinedEngineChoicesPreserveLegacyState()
         errorsSeparateKeyFromReachability()
 
         print("")
@@ -183,6 +184,8 @@ enum ProviderRequestTests {
             let body = payload(try! OpenRouterRequest.transcription(model: model.key, audio: audio, language: "auto"))
             check("\(id) is sent exactly", body["model"] as? String == id, String(describing: body["model"]))
             check("\(id) sends no unsupported language", body["language"] == nil)
+            let stale = payload(try! OpenRouterRequest.transcription(model: model.key, audio: audio, language: "en"))
+            check("\(id) ignores stale pinned language", stale["language"] == nil)
         }
     }
 
@@ -217,6 +220,10 @@ enum ProviderRequestTests {
         check("text", OpenRouterRequest.readText(body) == "ask not")
         check("empty result", OpenRouterRequest.readText(Data("{}".utf8)) == nil)
         check("non-string text is rejected", OpenRouterRequest.readText(Data(#"{"text":42}"#.utf8)) == nil)
+        let fish = Data(#"{"text":"<|speaker:0|> Hello.\n<|speaker:12|> Goodbye."}"#.utf8)
+        check("fish speaker controls are removed", OpenRouterRequest.readText(fish, model: "fish-audio-transcribe-1-pro") == "Hello.\n Goodbye.")
+        check("other models' literal text stays intact", OpenRouterRequest.readText(fish, model: "whisper-large-v3")?.contains("<|speaker:0|>") == true)
+        check("fish token-only reply becomes empty", OpenRouterRequest.readText(Data(#"{"text":"<|speaker:0|>"}"#.utf8), model: "fish-audio-transcribe-1-pro") == "")
     }
 
     static func unknownModelsAreRejected() {
@@ -325,11 +332,35 @@ enum ProviderRequestTests {
             }
         }
 
-        // Each provider owns a distinct Keychain entry, so no two share a key.
+        // Each provider keeps a distinct credential key, including legacy migration.
         let accounts = CloudProvider.allCases.map(\.keychainAccount)
-        check("keychain accounts are distinct", Set(accounts).count == accounts.count, "\(accounts)")
+        check("credential storage keys are distinct", Set(accounts).count == accounts.count, "\(accounts)")
         check("an unknown stored value falls back to cloudflare", CloudProvider.named("nonsense") == .cloudflare)
         check("a known stored value is honoured", CloudProvider.named("openrouter") == .openrouter)
+    }
+
+    static func combinedEngineChoicesPreserveLegacyState() {
+        section("one engine bar maps legacy engine/provider state without resetting it")
+        check("five visible choices", SpeechRecognitionChoice.allCases.map(\.label) == ["Parakeet", "Whisper", "Cloudflare", "Hugging Face", "OpenRouter"])
+        for provider in CloudProvider.allCases {
+            check("legacy \(provider.rawValue) cloud selection", SpeechRecognitionChoice.resolve(engine: "cloudflare", provider: provider.rawValue).rawValue == provider.rawValue)
+            check("Parakeet ignores remembered \(provider.rawValue)", SpeechRecognitionChoice.resolve(engine: "fluidaudio", provider: provider.rawValue) == .parakeet)
+            check("Whisper ignores remembered \(provider.rawValue)", SpeechRecognitionChoice.resolve(engine: "whisper", provider: provider.rawValue) == .whisper)
+            for choice in SpeechRecognitionChoice.allCases {
+                let state = choice.persistedSelection(preserving: provider.rawValue)
+                check("\(choice.label) round-trips from \(provider.rawValue)", SpeechRecognitionChoice.resolve(engine: state.engine, provider: state.provider) == choice)
+                if choice == .parakeet || choice == .whisper {
+                    check("\(choice.label) retains cloud provider \(provider.rawValue)", state.provider == provider.rawValue)
+                } else {
+                    check("\(choice.label) still uses the shared cloud engine", state.engine == "cloudflare")
+                }
+            }
+        }
+        check("missing legacy provider retains Cloudflare", SpeechRecognitionChoice.resolve(engine: "cloudflare", provider: "") == .cloudflare)
+        check("unknown provider retains safe Cloudflare fallback", SpeechRecognitionChoice.resolve(engine: "cloudflare", provider: "unknown") == .cloudflare)
+        check("unknown engine matches historical Whisper fallback", SpeechRecognitionChoice.resolve(engine: "unknown", provider: "openrouter") == .whisper)
+        let local = SpeechRecognitionChoice.parakeet.persistedSelection(preserving: "unknown")
+        check("local transition does not rewrite even an unknown stored provider", local.provider == "unknown")
     }
 
     // Test Connection has to tell these three apart, so they must not collapse
@@ -364,5 +395,9 @@ enum ProviderRequestTests {
             CloudHTTP.errorMessage(from: #"{"error":{"message":"User not found.","code":401}}"#) == "User not found."
         )
         check("a non-JSON body survives", CloudHTTP.errorMessage(from: "Not Found") == "Not Found")
+        check("401 means invalid key", CloudHTTP.responseError(provider: .openrouter, status: 401, body: "bad key") == .invalidKey(.openrouter, "bad key"))
+        check("403 is not mislabeled as invalid key", CloudHTTP.responseError(provider: .openrouter, status: 403, body: "age confirmation required") == .badStatus(.openrouter, 403, "age confirmation required"))
+        let gated = CloudProviderError.modelUnavailable(.openrouter, "meta/muse-voice-transcribe-1.0", "18+ age confirmation required")
+        check("unavailable model has actionable error", gated.errorDescription?.contains("meta/muse-voice-transcribe-1.0 is unavailable for this account: 18+ age confirmation required") == true)
     }
 }

@@ -59,6 +59,8 @@ The tracked source rebuilds both the app and the DMG. Verified by cloning the re
 
 `repos/` and `runs/` are gitignored and regenerated, so nothing there needs backing up. Upstream is pinned to an exact commit in `scripts/patch_osw.py`, because every patch is an exact string match and a moving branch would break a rebuild on whichever anchor drifted. Move the pin deliberately with `manage.sh --sync`.
 
+The runtime plaintext credentials file is under Application Support, outside `repos/` and the app bundle. Do not copy it into builds, DMGs or shared archives. Packaging stages only the built app, not the user settings directory.
+
 Two things do not come from the repo:
 
 | Not reproducible | Consequence |
@@ -67,6 +69,10 @@ Two things do not come from the repo:
 | The signing certificate | A new one is a new identity, so permissions need granting once more. |
 
 Builds stamp their own version and provenance into `Info.plist` (`CFBundleShortVersionString`, `CDSourceRef`, `CDUpstreamRef`), so a binary traces back to the commits that produced it rather than reporting upstream's version.
+
+## Local regression tests
+
+`npm test` covers client encoders, stubbed HTTP, private local-file credential persistence and offline audio speed without real credentials or paid requests. After `python3 scripts/patch_osw.py`, run `scripts/test_shortcuts.sh` to test the actual pinned shortcut dispatch and mouse-event filtering with isolated test dependencies, plus fresh full patch generation, idempotent reruns and the accessible full-width picker layout contract. That command does not create event taps, post global input, record audio, or alter preferences. Installed hotkey permissions and physical recorder behavior still require a GUI check.
 
 ## How the patching works
 

@@ -1,4 +1,5 @@
 .auth-token.local
+credentials.json
 .dev.vars
 .wrangler/
 node_modules/

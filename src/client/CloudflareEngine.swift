@@ -1,8 +1,8 @@
 import Foundation
 import AVFoundation
 
-/// Talks to the cloud-dictation worker. Shared by the transcription engine and
-/// the Test Connection button so both agree on what reachable means.
+/// Talks to Cloudflare through Direct API or the cloud-dictation Worker.
+/// Shared by the transcription engine and Test Connection.
 struct CloudflareClient {
     enum ConnectionMode: String {
         case worker
@@ -386,7 +386,7 @@ extension CloudflareClient: CloudTranscriber {
 
 /// Reads the current provider and its per-provider settings.
 ///
-/// Each provider owns its own model, cleanup model, and Keychain key, because a
+/// Each provider owns its own model, cleanup model, and credential key, because a
 /// model key is only meaningful to the vendor that publishes it: switching to
 /// Hugging Face must not leave "nova-3" selected, and switching back must not
 /// have lost the Cloudflare choice.
@@ -575,7 +575,9 @@ private enum CloudflareAudioCompressor {
         )
         var framesWritten: AVAudioFrameCount = 0
         var stalledRenders = 0
-        while !playbackCompletion.isComplete {
+        // The player can finish before AVAudioUnitTimePitch has drained its
+        // buffered output. Keep rendering that tail up to the target duration.
+        while !playbackCompletion.isComplete || framesWritten < expectedFrameCount {
             switch try engine.renderOffline(engine.manualRenderingMaximumFrameCount, to: buffer) {
             case .success:
                 stalledRenders = 0
@@ -604,9 +606,9 @@ private enum CloudflareAudioCompressor {
     }
 }
 
-/// Transcribes through a Cloudflare Worker backed by Workers AI.
-/// Audio never touches a local model: the recorded WAV is uploaded and the
-/// worker returns the finished text.
+/// Transcribes through the selected cloud provider. The internal engine key
+/// stays "cloudflare" for persisted-setting compatibility; the displayed name
+/// and request client follow CloudProviderSelection.
 class CloudflareEngine: TranscriptionEngine {
     var engineName: String { CloudProviderSelection.current.label }
 
@@ -669,6 +671,10 @@ class CloudflareEngine: TranscriptionEngine {
     }
 
     func transcribeAudio(url: URL, settings: Settings) async throws -> String {
+        try AuthTokenStore.validateStorage(
+            for: CloudProviderSelection.current,
+            connectionMode: AppPreferences.shared.cloudflareConnectionMode
+        )
         isCancelled = false
         onProgressUpdate?(0.05)
 

@@ -32,13 +32,15 @@ class PatchError(Exception):
 PATCH_SENTINELS = {
     "Settings: view model properties": "    @Published var cloudflareEndpoint: String {",
     "Settings: cloudflare panel": "    private var cloudflareSettings: some View {",
+    "Settings: engine picker": '                    get: { viewModel.recognitionChoice },',
+    "AppPreferences: cloudflare keys": '    @UserDefault(key: "cloudflareEndpoint", defaultValue: "")',
 }
 
 
 def patch(path: Path, anchor: str, replacement: str, label: str) -> None:
     text = path.read_text()
     sentinel = PATCH_SENTINELS.get(label)
-    if replacement.strip() in text or (sentinel is not None and sentinel in text):
+    if (replacement.strip() and replacement.strip() in text) or (sentinel is not None and sentinel in text):
         print(f"  = {label}: already applied")
         return
     if text.count(anchor) != 1:
@@ -75,6 +77,7 @@ def add_engine_file() -> None:
         ("CloudflareUsageView.swift", "Engines"),
         ("DictationFailure.swift", "Engines"),
         ("AuthTokenStore.swift", "Utils"),
+        ("LocalCredentialStore.swift", "Utils"),
         ("CloudflareSetupView.swift", "Onboarding"),
     ):
         shutil.copyfile(ROOT / "src" / "client" / name, APP / subdir / name)
@@ -99,8 +102,8 @@ def patch_preferences() -> None:
     @UserDefault(key: "cloudflareAccountID", defaultValue: "")
     var cloudflareAccountID: String
 
-    /// Keychain rather than UserDefaults: a bearer token in a plist is readable
-    /// with `defaults read` by anything running as this user.
+    /// User-approved local settings, separate from the app bundle. Legacy
+    /// Keychain entries are preserved and imported only without prompting.
     var cloudflareAuthToken: String {
         get { AuthTokenStore.token }
         set { AuthTokenStore.token = newValue }
@@ -116,7 +119,7 @@ def patch_preferences() -> None:
     @UserDefault(key: "cloudProvider", defaultValue: "cloudflare")
     var cloudProvider: String
 
-    /// One Keychain entry per provider. Switching provider must never
+    /// Separate local settings keys per provider. Switching provider must never
     /// overwrite another vendor's key, and no two providers share one.
     var huggingFaceAPIToken: String {
         get { AuthTokenStore.key(for: .huggingface) }
@@ -210,6 +213,9 @@ def patch_settings() -> None:
         didSet {
             AppPreferences.shared.cloudProvider = cloudProvider
             cloudflareTestStatus = .idle
+            // Setting a cloud choice while a local engine is active must not
+            // narrow local languages or schedule an intermediate reload.
+            guard selectedEngine == "cloudflare" else { return }
             // The new provider's models and languages differ, so the pickers
             // must be refilled before the user can pick an impossible pairing.
             let allowed = LanguageUtil.supportedLanguages(
@@ -455,25 +461,44 @@ def patch_settings() -> None:
         "Settings: init",
     )
 
+    # Accept both upstream's two-engine anchor and our previously generated
+    # three-engine anchor. Only the combined five-choice bar is emitted.
+    engine_picker_anchor = '''                Picker("Engine", selection: $viewModel.selectedEngine) {
+                    Text("Parakeet").tag("fluidaudio")
+                    Text("Whisper").tag("whisper")
+                }
+                .pickerStyle(.segmented)
+                .padding(.bottom, 8)'''
+    if 'Text("Cloudflare").tag("cloudflare")' in path.read_text():
+        engine_picker_anchor = engine_picker_anchor.replace(
+            '                    Text("Whisper").tag("whisper")',
+            '                    Text("Whisper").tag("whisper")\n'
+            '                    Text("Cloudflare").tag("cloudflare")',
+        ) + '''
+
+                if viewModel.selectedEngine == "cloudflare" {
+                    cloudflareSettings
+                }'''
     patch(
         path,
-        """                Picker("Engine", selection: $viewModel.selectedEngine) {
-                    Text("Parakeet").tag("fluidaudio")
-                    Text("Whisper").tag("whisper")
+        engine_picker_anchor,
+        '''                Picker("Engine", selection: Binding(
+                    get: { viewModel.recognitionChoice },
+                    set: { viewModel.recognitionChoice = $0 }
+                )) {
+                    ForEach(SpeechRecognitionChoice.allCases, id: \\.rawValue) { choice in
+                        Text(choice.label).tag(choice)
+                    }
                 }
                 .pickerStyle(.segmented)
-                .padding(.bottom, 8)""",
-        """                Picker("Engine", selection: $viewModel.selectedEngine) {
-                    Text("Parakeet").tag("fluidaudio")
-                    Text("Whisper").tag("whisper")
-                    Text("Cloudflare").tag("cloudflare")
-                }
-                .pickerStyle(.segmented)
+                .labelsHidden()
+                .accessibilityLabel("Engine")
+                .frame(maxWidth: .infinity)
                 .padding(.bottom, 8)
 
                 if viewModel.selectedEngine == "cloudflare" {
                     cloudflareSettings
-                }""",
+                }''',
         "Settings: engine picker",
     )
 
@@ -482,15 +507,6 @@ def patch_settings() -> None:
         """    private var modelSettings: some View {""",
         '''    private var cloudflareSettings: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Provider")
-                .font(.headline)
-            Picker("Provider", selection: $viewModel.cloudProvider) {
-                ForEach(CloudProvider.allCases, id: \\.rawValue) { provider in
-                    Text(provider.label).tag(provider.rawValue)
-                }
-            }
-            .pickerStyle(.segmented)
-
             if viewModel.cloudProviderCase == .cloudflare {
                 cloudflareConnectionSettings
             } else {
@@ -671,7 +687,7 @@ def patch_settings() -> None:
             )
             .textFieldStyle(.roundedBorder)
 
-            Text("Stored in this Mac's Keychain under its own entry, so switching provider never overwrites another key.")
+            Text("Stored as plaintext in a private local settings file, with a separate key for each provider.")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -702,7 +718,7 @@ def patch_settings() -> None:
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
-                Text("Paste a Workers AI API Token and the app finds its account automatically. Create one from Workers AI > Use REST API; it stays in this Mac's Keychain.")
+                Text("Paste a Workers AI API Token and the app finds its account automatically. Create one from Workers AI > Use REST API; it is saved in your private local settings file.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             } else {
@@ -721,6 +737,190 @@ def patch_settings() -> None:
 
     private var modelSettings: some View {''',
         "Settings: cloudflare panel",
+    )
+
+
+def patch_combined_engine_selection() -> None:
+    path = APP / "Settings.swift"
+    patch(
+        path,
+        '''                    ForEach(SpeechRecognitionChoice.allCases, id: \\.rawValue) { choice in
+                        Text(choice.label).tag(choice)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.bottom, 8)''',
+        '''                    ForEach(SpeechRecognitionChoice.allCases, id: \\.rawValue) { choice in
+                        Text(choice.label).tag(choice)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .accessibilityLabel("Engine")
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 8)''',
+        "Settings: label-free full-width engine picker",
+    )
+    patch(
+        path,
+        '    var cloudProviderCase: CloudProvider { CloudProvider.named(cloudProvider) }',
+        '''    /// Present old engine/provider settings as one choice without rewriting
+    /// credentials, models, or the remembered cloud provider for local engines.
+    var recognitionChoice: SpeechRecognitionChoice {
+        get { SpeechRecognitionChoice.resolve(engine: selectedEngine, provider: cloudProvider) }
+        set {
+            let selection = newValue.persistedSelection(preserving: cloudProvider)
+            // Provider first: while local, its observer only persists the value.
+            // The engine observer then validates language against the final pair.
+            if cloudProvider != selection.provider { cloudProvider = selection.provider }
+            if selectedEngine != selection.engine { selectedEngine = selection.engine }
+        }
+    }
+
+    var cloudProviderCase: CloudProvider { CloudProvider.named(cloudProvider) }''',
+        "Settings: combined engine selection",
+    )
+    patch(
+        path,
+        '''            cloudflareTestStatus = .idle
+            // The new provider's models and languages differ, so the pickers''',
+        '''            cloudflareTestStatus = .idle
+            // Setting a cloud choice while a local engine is active must not
+            // narrow local languages or schedule an intermediate reload.
+            guard selectedEngine == "cloudflare" else { return }
+            // The new provider's models and languages differ, so the pickers''',
+        "Settings: defer inactive provider reload",
+    )
+    patch(
+        path,
+        '''                } else {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Parakeet Model")''',
+        '''                } else if viewModel.selectedEngine == "fluidaudio" {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Parakeet Model")''',
+        "Settings: show Parakeet models only for local Parakeet",
+    )
+    # Compatibility removal for existing generated checkouts. The replacement
+    # panel above never emits this obsolete second bar on a fresh checkout.
+    if 'Picker("Provider", selection: $viewModel.cloudProvider)' in path.read_text():
+        patch(
+            path,
+            '''            Text("Provider")
+                .font(.headline)
+            Picker("Provider", selection: $viewModel.cloudProvider) {
+                ForEach(CloudProvider.allCases, id: \\.rawValue) { provider in
+                    Text(provider.label).tag(provider.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+
+''',
+            "",
+            "Settings: remove obsolete provider bar",
+        )
+
+
+def patch_local_credentials() -> None:
+    preferences = APP / "Utils" / "AppPreferences.swift"
+    patch(preferences,
+        '''    /// Keychain rather than UserDefaults: a bearer token in a plist is readable
+    /// with `defaults read` by anything running as this user.''',
+        '''    /// User-approved local settings, separate from the app bundle. Legacy
+    /// Keychain entries are preserved and imported only without prompting.''',
+        "Preferences: local credential storage description")
+    patch(preferences,
+        '''    /// One Keychain entry per provider. Switching provider must never
+    /// overwrite another vendor's key, and no two providers share one.''',
+        '''    /// Separate local settings keys per provider. Switching provider must never
+    /// overwrite another vendor's key, and no two providers share one.''',
+        "Preferences: separate local provider keys")
+    settings = APP / "Settings.swift"
+    patch(settings,
+        '    @Published var huggingFaceAPIToken: String {',
+        '''    private var isRefreshingCloudCredentials = false
+
+    var credentialStorageMessage: String? {
+        AuthTokenStore.persistenceError ?? AuthTokenStore.importMessage(
+            for: cloudProviderCase, connectionMode: cloudflareConnectionMode)
+    }
+
+    func refreshLocalCredentials(importEnvironment: Bool = false) {
+        if importEnvironment { AuthTokenStore.importEnvironment() }
+        else { AuthTokenStore.reload() }
+        isRefreshingCloudCredentials = true
+        defer { isRefreshingCloudCredentials = false }
+        let prefs = AppPreferences.shared
+        cloudflareAuthToken = prefs.cloudflareAuthToken
+        cloudflareDirectAPIToken = prefs.cloudflareDirectAPIToken
+        huggingFaceAPIToken = prefs.huggingFaceAPIToken
+        openRouterAPIToken = prefs.openRouterAPIToken
+        cloudflareTestStatus = .idle
+    }
+
+    @Published var huggingFaceAPIToken: String {''',
+        "Settings: local credential refresh")
+    for property in ("huggingFaceAPIToken", "openRouterAPIToken", "cloudflareAuthToken"):
+        patch(settings,
+            f"        didSet {{ AppPreferences.shared.{property} = {property} }}",
+            f"        didSet {{ if !isRefreshingCloudCredentials {{ AppPreferences.shared.{property} = {property} }} }}",
+            f"Settings: avoid writing {property} on refresh")
+    patch(settings,
+        '''    @Published var cloudflareDirectAPIToken: String {
+        didSet {
+            AppPreferences.shared.cloudflareDirectAPIToken = cloudflareDirectAPIToken''',
+        '''    @Published var cloudflareDirectAPIToken: String {
+        didSet {
+            guard !isRefreshingCloudCredentials else { return }
+            AppPreferences.shared.cloudflareDirectAPIToken = cloudflareDirectAPIToken''',
+        "Settings: avoid writing Direct API key on refresh")
+    patch(settings,
+        '''                Text("Paste a Workers AI API Token and the app finds its account automatically. Create one from Workers AI > Use REST API; it stays in this Mac's Keychain.")''',
+        '''                Text("Paste a Workers AI API Token and the app finds its account automatically. Create one from Workers AI > Use REST API; it is saved in your private local settings file.")''',
+        "Settings: Direct API local storage note")
+    patch(settings,
+        '''            Text("Stored in this Mac's Keychain under its own entry, so switching provider never overwrites another key.")''',
+        '''            Text("Stored as plaintext in a private local settings file, with a separate key for each provider.")''',
+        "Settings: local storage note")
+    patch(settings,
+        '''        VStack(alignment: .leading, spacing: 12) {
+            if viewModel.cloudProviderCase == .cloudflare {''',
+        '''        VStack(alignment: .leading, spacing: 12) {
+            Text("API keys are plaintext in this Mac's private Application Support/OSW Cloud/credentials.json, not in the app or Keychain. Keep this file private.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let message = viewModel.credentialStorageMessage {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Button("Import keys from environment") {
+                    viewModel.refreshLocalCredentials(importEnvironment: true)
+                }
+                Button("Reload local settings") {
+                    viewModel.refreshLocalCredentials()
+                }
+            }
+            if viewModel.cloudProviderCase == .cloudflare {''',
+        "Settings: local storage status and explicit import")
+    patch(settings,
+        '''            do {
+                if cloudProviderCase == .cloudflare {''',
+        '''            do {
+                try AuthTokenStore.validateStorage(for: cloudProviderCase, connectionMode: cloudflareConnectionMode)
+                if cloudProviderCase == .cloudflare {''',
+        "Settings: surface local persistence errors before connection test")
+
+
+def patch_shortcut_behavior() -> None:
+    patch(
+        APP / "ShortcutManager.swift",
+        "if AppPreferences.shared.doublePressToTrigger && activeVm == nil {",
+        "if useModifierOnlyHotkey && AppPreferences.shared.doublePressToTrigger && activeVm == nil {",
+        "Shortcuts: keep modifier double-tap out of keyboard and mouse modes",
     )
 
 
@@ -1374,6 +1574,9 @@ def main() -> int:
         patch_preferences()
         patch_service()
         patch_settings()
+        patch_combined_engine_selection()
+        patch_local_credentials()
+        patch_shortcut_behavior()
         patch_cloudflare_setup()
         patch_menu_bar()
         patch_onboarding()
@@ -1388,7 +1591,7 @@ def main() -> int:
         return 1
 
     print(f"\nDone. Open {CHECKOUT / 'OpenSuperWhisper.xcodeproj'} and build.")
-    print("Settings > Models > Engine > Cloudflare, then paste the endpoint and token.")
+    print("Settings > Models > Engine: select a local engine or cloud provider, then configure its credentials.")
     return 0
 
 
