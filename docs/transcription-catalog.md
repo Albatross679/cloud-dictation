@@ -1,17 +1,21 @@
 # Transcription catalogue and public pricing
 
-Checked 2026-10-01. This is a catalogue of selectable transcription models, not
-an accuracy or latency benchmark. No user recordings or paid probe calls were
-used to make this table.
+Checked 2026-10-01 (OpenRouter page snapshot around 15:13 UTC). This is a
+catalogue of selectable transcription models, not an accuracy or latency
+benchmark. No user recordings were used. Preliminary paid requests made before
+the later no-probe instruction are excluded from this table and no further live
+requests were made after that instruction.
 
-**Latency terminology.** `OpenRouter P50` is the provider latency displayed on
-the model's OpenRouter page, not end-to-end hotkey-to-paste latency and not a
-same-clip comparison. Cloudflare and Hugging Face do not publish a comparable
-per-model STT P50 for these routes, so they are explicitly marked unavailable.
+**Latency terminology.** `OpenRouter P50` is the provider-specific latency
+shown on that model page at the snapshot time, not end-to-end hotkey-to-paste
+latency and not a same-clip comparison. The named provider's concurrent price
+is shown in the same row. Cloudflare and Hugging Face do not publish a
+comparable per-model STT P50 for these routes, so they are explicitly marked
+unavailable.
 
 **Pricing terminology.** Duration rows are shown in the provider's published
-unit (with an exact per-minute multiplication only where it is a fixed
-per-second rate). Token rows are deliberately not converted to minutes: the
+unit. Per-minute values derived from display-rounded per-second prices are
+labelled *about*. Token rows are deliberately not converted to minutes: the
 [OpenRouter STT API](https://openrouter.ai/docs/guides/overview/multimodal/stt)
 reports the actual input/output token counts and `usage.cost` for each request.
 Hugging Face's `hf-inference` route bills underlying hardware compute time, so
@@ -27,19 +31,19 @@ paid usage.
 | Cloudflare | `whisper-tiny-en` / `@cf/openai/whisper-tiny-en` | Unavailable in current public pricing table | Not published comparably |
 | Hugging Face | `whisper-large-v3-turbo` / `openai/whisper-large-v3-turbo` | Compute time × underlying hardware rate; no fixed audio-minute price | Not published comparably |
 | Hugging Face | `whisper-large-v3` / `openai/whisper-large-v3` | Compute time × underlying hardware rate; no fixed audio-minute price | Not published comparably |
-| OpenRouter | `whisper-large-v3-turbo` / `openai/whisper-large-v3-turbo` | $0.000003/audio sec ($0.00018/audio min) | P50 2.34 s |
-| OpenRouter | `whisper-large-v3` / `openai/whisper-large-v3` | $0.000008/audio sec ($0.00048/audio min) | P50 1.56 s |
-| OpenRouter | `nova-3` / `deepgram/nova-3` | $0.000072/audio sec ($0.00432/audio min; multilingual $0.000087/sec) | P50 0.66 s |
-| OpenRouter | `gpt-4o-mini-transcribe` / `openai/gpt-4o-mini-transcribe` | $1.25/M input tokens + $5/M output tokens | P50 0.79 s |
-| OpenRouter | `gpt-4o-transcribe` / `openai/gpt-4o-transcribe` | $2.50/M input tokens + $10/M output tokens | P50 0.79 s |
-| OpenRouter | `gemini-3.5-transcribe` / `google/gemini-3.5-transcribe` | $2/M input tokens + $12/M output tokens | P50 2.45 s |
-| OpenRouter | `fish-audio/transcribe-1-pro` | $0.0001/audio sec ($0.006/audio min) | P50 0.14 s |
-| OpenRouter | `assemblyai/universal-3-5-pro` | $0.000125/audio sec ($0.0075/audio min; prompted $0.000139/sec) | P50 0.93 s |
-| OpenRouter | `meta/muse-voice-transcribe-1.0` | $0.00005/audio sec ($0.003/audio min) | P50 1.30 s |
-| OpenRouter | `microsoft/mai-transcribe-2` | $0.10/audio hour ($0.0016667/audio min) | P50 0.75 s |
-| OpenRouter | `qwen/qwen3-asr-1.7b` | $0.000008/audio sec ($0.00048/audio min) | P50 1.74 s |
-| OpenRouter | `qwen/qwen3-asr-0.6b` | $0.000003/audio sec ($0.00018/audio min) | P50 0.81 s |
-| OpenRouter | `openai/gpt-transcribe` | $0.000075/audio sec ($0.0045/audio min) | P50 0.77 s |
+| OpenRouter | `whisper-large-v3-turbo` / `openai/whisper-large-v3-turbo` | DeepInfra: $0.000003/audio sec (about $0.00018/audio min; display-rounded) | DeepInfra P50 2.34 s |
+| OpenRouter | `whisper-large-v3` / `openai/whisper-large-v3` | DeepInfra: $0.000008/audio sec (about $0.00048/audio min; display-rounded) | DeepInfra P50 1.56 s |
+| OpenRouter | `nova-3` / `deepgram/nova-3` | Deepgram: $0.000072/audio sec (about $0.00432/audio min; multilingual $0.000087/sec) | Deepgram P50 0.66 s |
+| OpenRouter | `gpt-4o-mini-transcribe` / `openai/gpt-4o-mini-transcribe` | OpenAI: $1.25/M input tokens + $5/M output tokens | OpenAI P50 0.79 s |
+| OpenRouter | `gpt-4o-transcribe` / `openai/gpt-4o-transcribe` | OpenAI: $2.50/M input tokens + $10/M output tokens | OpenAI P50 0.79 s |
+| OpenRouter | `gemini-3.5-transcribe` / `google/gemini-3.5-transcribe` | Google AI Studio: $2/M input tokens + $12/M output tokens | Google AI Studio P50 2.45 s |
+| OpenRouter | `fish-audio/transcribe-1-pro` | Fish Audio: $0.0001/audio sec ($0.006/audio min) | Fish Audio P50 0.14 s |
+| OpenRouter | `assemblyai/universal-3-5-pro` | AssemblyAI: $0.000125/audio sec ($0.0075/audio min; prompted $0.000139/sec) | AssemblyAI P50 0.93 s |
+| OpenRouter | `meta/muse-voice-transcribe-1.0` | Meta: $0.00005/audio sec ($0.003/audio min) | Meta P50 1.30 s |
+| OpenRouter | `microsoft/mai-transcribe-2` | Azure: $0.10/audio hour ($0.0016667/audio min) | Azure P50 0.75 s |
+| OpenRouter | `qwen/qwen3-asr-1.7b` | DeepInfra: $0.000008/audio sec (about $0.00048/audio min; display-rounded) | DeepInfra P50 1.74 s |
+| OpenRouter | `qwen/qwen3-asr-0.6b` | DeepInfra: $0.000003/audio sec (about $0.00018/audio min; display-rounded) | DeepInfra P50 0.81 s |
+| OpenRouter | `openai/gpt-transcribe` | OpenAI: $0.000075/audio sec ($0.0045/audio min) | OpenAI P50 0.77 s |
 
 ## Primary sources
 
