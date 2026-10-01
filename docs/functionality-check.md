@@ -57,6 +57,8 @@ Run `npm test` or `scripts/test_client.sh`. Tests require macOS Swift, AVFoundat
 
 ## Installed-app limits
 
-The pre-fix installed app is source `3edd9a0`, version `0.1.0`. Its strict deep code-signature check passed, its designated requirement names the retained certificate leaf, and its process was running. Supervisor GUI inspection confirmed Cloudflare Direct/Nova-3 selection, cleanup off, speed 1, every advertised speed choice, Nova-3's ten pinned languages plus Auto, vocabulary, and enabled auto-paste. Settings were not changed.
+The pre-fix installed app was source `3edd9a0`, version `0.1.0`. Its strict deep code-signature check passed, its designated requirement named the retained certificate leaf, and its process was running. Supervisor GUI inspection confirmed Cloudflare Direct/Nova-3 selection, cleanup off, speed 1, every advertised speed choice, Nova-3's ten pinned languages plus Auto, vocabulary, and enabled auto-paste. Settings were not changed.
+
+The fixes built successfully as source `287ca9b`, signed with `Cloud Dictation Local Signing`. The supervisor installed that bundle, and the installed source stamp and strict deep signature check passed with the same certificate-leaf designated requirement. The supervisor quit the old process and verified a new running process and actual Settings window from the installed bundle. The user then changed GUI selections, so no further settings interaction was attempted. Existing upstream Swift concurrency and libomp deployment-target build warnings remain, with no build errors.
 
 Request-path and offline audio tests do not prove physical microphone capture, modifier hotkey handling, actual paste into a focused application, recording history, or TCC grants. The supervisor cannot speak into the microphone, and no recorder end-to-end success is claimed. No TCC reset, credential/default overwrite, worker deploy, or destructive upstream reset was performed.
