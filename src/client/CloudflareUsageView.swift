@@ -68,7 +68,7 @@ struct CloudflareUsageView: View {
             }
         }
         .padding(.leading, 4)
-        .help("Neurons are Cloudflare's billing unit. The daily free allowance resets at 00:00 UTC.")
+        .help("Legacy Worker account totals only, not cross-provider history. Audio is uploaded duration after speed adjustment. The daily free allowance resets at 00:00 UTC.")
         .onAppear { model.refresh() }
         .onChange(of: refreshToken) { _, _ in model.refresh() }
     }
@@ -80,7 +80,7 @@ struct CloudflareUsageView: View {
             : String(format: "%.1f min", minutes)
         let percent = Int((today.free_used_fraction * 100).rounded())
 
-        var line = "Since 00:00 UTC: \(duration) · \(Int(today.neurons.rounded())) neurons · \(percent)% of free tier"
+        var line = "Worker uploads since 00:00 UTC: \(duration) · \(Int(today.neurons.rounded())) neurons · \(percent)% of free tier"
         if today.billable_usd > 0 {
             line += String(format: " · $%.3f billable", today.billable_usd)
         }

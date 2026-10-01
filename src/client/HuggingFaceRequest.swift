@@ -131,7 +131,9 @@ struct HuggingFaceClient: CloudTranscriber {
         let audio = try Data(contentsOf: fileURL)
 
         let plan = try HuggingFaceRequest.transcription(model: modelKey, audio: audio)
-        let data = try await CloudHTTP.send(plan, provider: .huggingface, bearer: key, timeout: 300)
+        let data = try await CloudHTTP.send(plan, provider: .huggingface, bearer: key, timeout: 300,
+                                            metricModel: try HuggingFaceRequest.model(modelKey).id,
+                                            metricSeconds: await UsageTracking.audioSeconds(fileURL))
         var text = (HuggingFaceRequest.readText(data) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 
         // The recognizer cannot see the vocabulary, but the cleanup pass can
@@ -152,7 +154,8 @@ struct HuggingFaceClient: CloudTranscriber {
             text: text
         )
         // A cleanup failure must not lose a transcript the user already spoke.
-        guard let data = try? await CloudHTTP.send(plan, provider: .huggingface, bearer: key, timeout: 120),
+        guard let data = try? await CloudHTTP.send(plan, provider: .huggingface, bearer: key, timeout: 120,
+                                                  metricModel: id, metricPhase: "cleanup"),
               let cleaned = CloudHTTP.readChatText(data)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !cleaned.isEmpty
         else { return text }

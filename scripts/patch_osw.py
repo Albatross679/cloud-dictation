@@ -33,6 +33,10 @@ PATCH_SENTINELS = {
     "Settings: view model properties": "    @Published var cloudflareEndpoint: String {",
     "Settings: cloudflare panel": "    private var cloudflareSettings: some View {",
     "Settings: engine picker": '                    get: { viewModel.recognitionChoice },',
+    "Usage: original duration and run": "let metricRun = store.begin(UsageDictation",
+    "ContentView: usage readout": "                                UsageDashboardButton()",
+    "ContentView.swift: surface dictation failures": "await DictationFailure.record(audioAt: tempURL, error: error, recordingID: metricID)",
+    "Indicator/IndicatorWindow.swift: surface dictation failures": "await DictationFailure.record(audioAt: tempURL, error: error, recordingID: metricID)",
     "AppPreferences: cloudflare keys": '    @UserDefault(key: "cloudflareEndpoint", defaultValue: "")',
 }
 
@@ -75,6 +79,9 @@ def add_engine_file() -> None:
         ("HuggingFaceRequest.swift", "Engines"),
         ("OpenRouterRequest.swift", "Engines"),
         ("CloudflareUsageView.swift", "Engines"),
+        ("UsageMetrics.swift", "Engines"),
+        ("UsageSelection.swift", "Engines"),
+        ("UsageDashboard.swift", "Engines"),
         ("DictationFailure.swift", "Engines"),
         ("AuthTokenStore.swift", "Utils"),
         ("LocalCredentialStore.swift", "Utils"),
@@ -1566,6 +1573,96 @@ def patch_content_view() -> None:
     )
 
 
+def patch_usage_metrics() -> None:
+    path = APP / "TranscriptionService.swift"
+    patch(path, "    init() {\n        loadEngine()",
+          "    private let usageMetricsStore: UsageMetricsStore\n\n    init(metricsStore: UsageMetricsStore = .shared) {\n        self.usageMetricsStore = metricsStore\n        loadEngine()",
+          "Usage: injectable local store")
+    patch(path, "    private var currentEngine: TranscriptionEngine?",
+          "    private var currentEngine: TranscriptionEngine?\n    private var usageLoadedSelection: UsageSelection?",
+          "Usage: loaded model snapshot")
+    patch(path, '        let selectedEngine = AppPreferences.shared.selectedEngine\n',
+          '        let selectedEngine = AppPreferences.shared.selectedEngine\n        let usageSelection = UsageSelection.capture(engine: selectedEngine)\n',
+          "Usage: engine load selection")
+    patch(path, "                    self.currentEngine = engine\n",
+          "                    self.currentEngine = engine\n                    self.usageLoadedSelection = usageSelection\n",
+          "Usage: loaded selection assignment")
+    patch(path,
+          "    func transcribeAudio(url: URL, settings: Settings) async throws -> String {",
+          "    func transcribeAudio(url: URL, settings: Settings, metricID: UUID = UUID(), recordedAt: Date? = nil) async throws -> String {",
+          "Usage: service identity")
+    patch(path,
+          "        progress = 0.0\n        conversionProgress = 0.0",
+          '''        // Read the original recording before any engine converts or speeds it up.
+        let selection = currentEngine is CloudflareEngine ? UsageSelection.capture(engine: "cloudflare") : usageLoadedSelection ?? UsageSelection.capture(engine: AppPreferences.shared.selectedEngine)
+        let date = recordedAt ?? (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
+        let seconds = await UsageTracking.audioSeconds(url)
+        let store = UsageMetricsStore.shared
+        let metricRun = store.begin(UsageDictation(id: metricID, recordedAt: date, originalSeconds: seconds,
+                                                 engine: selection.engine, provider: selection.provider, model: selection.model),
+                                    engine: selection.engine, provider: selection.provider, model: selection.model)
+        var metricOutcome = "failure"
+        defer { store.finishRun(metricRun, outcome: metricOutcome) }
+
+        progress = 0.0
+        conversionProgress = 0.0''',
+          "Usage: original duration and run")
+    patch(path, "        let store = UsageMetricsStore.shared", "        let store = usageMetricsStore",
+          "Usage: store selection")
+    patch(path, "        let selection = currentEngine is CloudflareEngine",
+          "        let usageEngine = currentEngine\n        let selection = usageEngine is CloudflareEngine",
+          "Usage: freeze engine before duration read")
+    patch(path, "        guard let engine = currentEngine else {", "        guard let engine = usageEngine else {",
+          "Usage: transcribe captured engine")
+    patch(path,
+          "            let result = try await engine.transcribeAudio(url: url, settings: settings)",
+          '''            let result = try await UsageTracking.$context.withValue(
+                UsageContext(dictationID: metricID, runID: metricRun, store: store)) {
+                try await engine.transcribeAudio(url: url, settings: settings)
+            }''',
+          "Usage: detached request context")
+    patch(path,
+          "            return try await task.value\n        } catch is CancellationError {",
+          '''            let result = try await task.value
+            metricOutcome = "success"
+            return result
+        } catch is CancellationError {
+            metricOutcome = "cancelled"''',
+          "Usage: run completion")
+    for name in ("ContentView.swift", "Indicator/IndicatorWindow.swift"):
+        path = APP / name
+        patch(path,
+              "            if let tempURL = await self.recorder.stopRecording() {\n                do {",
+              "            if let tempURL = await self.recorder.stopRecording() {\n                let metricID = UUID()\n                do {",
+              f"Usage: {name} recording identity")
+        patch(path,
+              "transcriptionService.transcribeAudio(url: tempURL, settings: Settings())",
+              "transcriptionService.transcribeAudio(url: tempURL, settings: Settings(), metricID: metricID)",
+              f"Usage: {name} service identity")
+        patch(path, "let recordingId = UUID()", "let recordingId = metricID",
+              f"Usage: {name} history identity")
+        patch(path,
+              "await DictationFailure.record(audioAt: tempURL, error: error)",
+              "await DictationFailure.record(audioAt: tempURL, error: error, recordingID: metricID)",
+              f"Usage: {name} failure identity")
+    patch(APP / "TranscriptionQueue.swift",
+          "transcriptionService.transcribeAudio(url: sourceURL, settings: settings)",
+          "transcriptionService.transcribeAudio(url: sourceURL, settings: settings, metricID: recording.id, recordedAt: recording.timestamp)",
+          "Usage: queue retry identity")
+    patch(APP / "ContentView.swift",
+          '''                                if AppPreferences.shared.selectedEngine == "cloudflare",
+                                   CloudProviderSelection.current == .cloudflare {
+                                    CloudflareUsageView(refreshToken: viewModel.recordings.count)
+                                }''',
+          '''                                UsageDashboardButton()
+                                if AppPreferences.shared.selectedEngine == "cloudflare",
+                                   CloudProviderSelection.current == .cloudflare,
+                                   AppPreferences.shared.cloudflareConnectionMode != "direct" {
+                                    CloudflareUsageView(refreshToken: viewModel.recordings.count)
+                                }''',
+          "Usage: cross-provider dashboard entry")
+
+
 def main() -> int:
     clone()
     print("Patching:")
@@ -1585,6 +1682,7 @@ def main() -> int:
         patch_transcription_settings()
         patch_failure_paths()
         patch_content_view()
+        patch_usage_metrics()
     except PatchError as err:
         print(f"\nFAILED: {err}", file=sys.stderr)
         print("Upstream changed. Fix the anchor in this script and rerun.", file=sys.stderr)

@@ -251,7 +251,10 @@ enum CloudHTTP {
         _ plan: CloudRequestPlan,
         provider: CloudProvider,
         bearer: String,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        metricModel: String = "",
+        metricPhase: String = "transcription",
+        metricSeconds: Double? = nil
     ) async throws -> Data {
         var request = URLRequest(url: plan.url)
         request.httpMethod = plan.method
@@ -267,7 +270,10 @@ enum CloudHTTP {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            (data, response) = try await UsageTracking.send(provider: provider.rawValue, model: metricModel,
+                                                          phase: metricPhase, seconds: metricSeconds) {
+                try await URLSession.shared.data(for: request)
+            }
         } catch let error as URLError {
             throw CloudProviderError.unreachable(provider, error.localizedDescription)
         }

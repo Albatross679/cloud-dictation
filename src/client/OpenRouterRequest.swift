@@ -236,7 +236,9 @@ struct OpenRouterClient: CloudTranscriber {
         // Cloudflare path's five minutes would only delay the error.
         let data: Data
         do {
-            data = try await CloudHTTP.send(plan, provider: .openrouter, bearer: key, timeout: 120)
+            data = try await CloudHTTP.send(plan, provider: .openrouter, bearer: key, timeout: 120,
+                                            metricModel: try OpenRouterRequest.model(modelKey).id,
+                                            metricSeconds: await UsageTracking.audioSeconds(fileURL))
         } catch let CloudProviderError.badStatus(_, 403, detail) {
             throw CloudProviderError.modelUnavailable(.openrouter, try OpenRouterRequest.model(modelKey).id, detail)
         }
@@ -258,7 +260,8 @@ struct OpenRouterClient: CloudTranscriber {
             system: CloudHTTP.cleanupSystem(terms: terms),
             text: text
         )
-        guard let data = try? await CloudHTTP.send(plan, provider: .openrouter, bearer: key, timeout: 120),
+        guard let data = try? await CloudHTTP.send(plan, provider: .openrouter, bearer: key, timeout: 120,
+                                                  metricModel: id, metricPhase: "cleanup"),
               let cleaned = CloudHTTP.readChatText(data)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !cleaned.isEmpty
         else { return text }

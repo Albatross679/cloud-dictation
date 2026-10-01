@@ -79,9 +79,14 @@ Cost: pay per request with no subscription, at each upstream provider's rate plu
 | Vocabulary boosting | yes, on Nova-3 and Whisper turbo | **no**, the pipeline takes no decoder prompt | model/provider-specific; this app does not send optional keyterm routes |
 | Audio speed | yes | yes | yes |
 | LLM cleanup | yes, on Workers AI | yes, on the HF router | yes, on OpenRouter |
-| Neuron usage readout | Worker mode only; Direct API uses the dashboard | no, not a Cloudflare account | no, not a Cloudflare account |
+| Local dictation usage dashboard | original minutes and estimated/unknown request costs | original minutes and unknown costs | original minutes and provider-reported/unknown costs |
+| Legacy neuron readout | Worker account uploads only, UTC | no, not a Cloudflare account | no, not a Cloudflare account |
 
 Where a feature says no, the app disables the control and prints the reason next to it rather than accepting the setting and dropping it. Audio speed is applied on your Mac before the upload, so every provider honors it. The vocabulary list still reaches the cleanup pass as known spellings even where the recognizer cannot use it.
+
+## Dictation usage
+
+Open **Dictation usage** in the main window for separate native charts of original recording minutes and request costs across local engines and all cloud providers. Choose daily, weekly or monthly calendar totals, a date range and a provider filter. The Mac saves a private local ledger without transcripts, audio bytes or credentials. Reported charges, gross list-rate estimates and unknown costs remain separate, including cleanup and retries. Local inference adds minutes without a cloud API charge. Existing recordings and legacy Worker account totals are not backfilled as cross-provider history. See [docs/usage-metrics.md](docs/usage-metrics.md) for storage, rates, calendar rules and tests.
 
 ## Structure
 
@@ -103,4 +108,5 @@ repos/            upstream checkout, generated, gitignored
 - [docs/models.md](docs/models.md) - which model to pick, languages, vocabulary, measured accuracy and cost
 - [docs/api.md](docs/api.md) - worker endpoints and parameters
 - [docs/building.md](docs/building.md) - build requirements, signing, packaging, reproducibility
+- [docs/usage-metrics.md](docs/usage-metrics.md) - local recording minutes, request costs, calendar dashboard and offline tests
 - [docs/functionality-check.md](docs/functionality-check.md) - synthetic request checks, unavailable models, offline regressions, and recorder-test limits
