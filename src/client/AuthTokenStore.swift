@@ -83,20 +83,24 @@ enum AuthTokenStore {
         ]
     }
 
+    /// A readable current item wins over stale pre-Keychain defaults. Defaults
+    /// are used only when no item exists, never over a denied protected item.
+    static func legacyCredential(status: OSStatus, data: Data?, defaults: String?) -> String? {
+        if status == errSecSuccess, let data,
+           let value = String(data: data, encoding: .utf8), !value.isEmpty { return value }
+        if status == errSecItemNotFound, let defaults, !defaults.isEmpty { return defaults }
+        return nil
+    }
+
     private static func migrateLegacy() -> LocalCredentialStore.Migration {
         var result = LocalCredentialStore.Migration()
-        // A pre-Keychain Worker token already present in defaults is supported
-        // once. Leave defaults and all existing Keychain entries untouched.
-        if let old = UserDefaults.standard.string(forKey: workerAccount), !old.isEmpty {
-            result.credentials[workerAccount] = old
-        }
+        // Leave defaults and all existing Keychain entries untouched.
+        let oldWorker = UserDefaults.standard.string(forKey: workerAccount)
         for account in [workerAccount, directAPIAccount, CloudProvider.huggingface.keychainAccount, CloudProvider.openrouter.keychainAccount] {
-            guard result.credentials[account] == nil else { continue }
             let query = legacyMigrationQuery(account: account)
             var item: CFTypeRef?
             let status = SecItemCopyMatching(query as CFDictionary, &item)
-            if status == errSecSuccess, let data = item as? Data,
-               let value = String(data: data, encoding: .utf8), !value.isEmpty {
+            if let value = legacyCredential(status: status, data: item as? Data, defaults: account == workerAccount ? oldWorker : nil) {
                 result.credentials[account] = value
             } else if status != errSecItemNotFound {
                 result.importNeeded.append(account)

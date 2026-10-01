@@ -41,6 +41,9 @@ import Security
         let query = AuthTokenStore.legacyMigrationQuery(account: "test-only-account")
         check("legacy query never prompts", query[kSecUseAuthenticationUI as String] as? String == kSecUseAuthenticationUIFail as String)
         check("legacy query reads one exact account", query[kSecAttrAccount as String] as? String == "test-only-account")
+        check("readable current key beats stale defaults", AuthTokenStore.legacyCredential(status: errSecSuccess, data: Data("current-fake".utf8), defaults: "stale-fake") == "current-fake")
+        check("missing Worker item imports old defaults once", AuthTokenStore.legacyCredential(status: errSecItemNotFound, data: nil, defaults: "old-fake") == "old-fake")
+        check("denied item is not overridden by stale defaults", AuthTokenStore.legacyCredential(status: errSecInteractionNotAllowed, data: nil, defaults: "stale-fake") == nil)
 
         let corrupt = root.appendingPathComponent("invalid/credentials.json")
         try FileManager.default.createDirectory(at: corrupt.deletingLastPathComponent(), withIntermediateDirectories: true)
