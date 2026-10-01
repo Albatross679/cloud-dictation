@@ -27,9 +27,10 @@ enum OpenRouterRequest {
     /// base64 expansion so the message names a size the user recognises.
     static let maxAudioBytes = 25 * 1_048_576
 
-    /// A deliberately short list drawn from the 19 models the live catalogue
-    /// reports, chosen to cover the three reasons someone switches: matching
-    /// the Cloudflare default, lowest cost, and highest accuracy.
+    /// The established models plus the requested public STT catalogue entries.
+    /// Each key is local preference state; `id` is always the exact OpenRouter
+    /// model id sent on the wire. New entries deliberately offer auto-detect
+    /// only until their model-specific language constraints have been verified.
     static let catalog: [CloudModel] = [
         CloudModel(
             key: "whisper-large-v3-turbo",
@@ -66,6 +67,62 @@ enum OpenRouterRequest {
             label: "GPT-4o transcribe",
             languages: nil,
             notes: "OpenAI's full transcription model. The most accurate option here."
+        ),
+        CloudModel(
+            key: "gemini-3.5-transcribe",
+            id: "google/gemini-3.5-transcribe",
+            label: "Gemini 3.5 Transcribe",
+            languages: [],
+            notes: "Google synchronous speech-to-text with optional timestamps and diarization outside this app."
+        ),
+        CloudModel(
+            key: "fish-audio-transcribe-1-pro",
+            id: "fish-audio/transcribe-1-pro",
+            label: "Fish Audio Transcribe 1 Pro",
+            languages: [],
+            notes: "Fish Audio's transcription model for recorded speech."
+        ),
+        CloudModel(
+            key: "assemblyai-universal-3-5-pro",
+            id: "assemblyai/universal-3-5-pro",
+            label: "AssemblyAI Universal-3.5 Pro",
+            languages: [],
+            notes: "AssemblyAI synchronous transcription for clips up to 120 seconds."
+        ),
+        CloudModel(
+            key: "muse-voice-transcribe-1.0",
+            id: "meta/muse-voice-transcribe-1.0",
+            label: "Meta Muse Voice Transcribe 1.0",
+            languages: [],
+            notes: "Meta synchronous speech-to-text."
+        ),
+        CloudModel(
+            key: "mai-transcribe-2",
+            id: "microsoft/mai-transcribe-2",
+            label: "Microsoft MAI-Transcribe 2",
+            languages: [],
+            notes: "Microsoft multilingual speech-to-text; this app uses automatic language detection."
+        ),
+        CloudModel(
+            key: "qwen3-asr-1.7b",
+            id: "qwen/qwen3-asr-1.7b",
+            label: "Qwen3 ASR 1.7B",
+            languages: [],
+            notes: "Qwen multilingual automatic speech recognition."
+        ),
+        CloudModel(
+            key: "qwen3-asr-0.6b",
+            id: "qwen/qwen3-asr-0.6b",
+            label: "Qwen3 ASR 0.6B",
+            languages: [],
+            notes: "Compact Qwen multilingual automatic speech recognition."
+        ),
+        CloudModel(
+            key: "gpt-transcribe",
+            id: "openai/gpt-transcribe",
+            label: "GPT Transcribe",
+            languages: [],
+            notes: "OpenAI's high-accuracy speech-to-text model."
         ),
     ]
 
@@ -172,8 +229,9 @@ struct OpenRouterClient: CloudTranscriber {
         // Cloudflare path's five minutes would only delay the error.
         let data = try await CloudHTTP.send(plan, provider: .openrouter, bearer: key, timeout: 120)
         var text = (OpenRouterRequest.readText(data) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { throw CloudProviderError.emptyTranscript(.openrouter) }
 
-        if values["cleanup"] == "1", !text.isEmpty {
+        if values["cleanup"] == "1" {
             let terms = CloudHTTP.parseTerms(values["vocabulary"] ?? "")
             text = try await cleanup(text: text, modelKey: values["cleanup_model"] ?? OpenRouterRequest.defaultCleanupModelKey, terms: terms, key: key)
         }

@@ -112,7 +112,7 @@ struct CloudProviderFeatures: Equatable {
         case .openrouter:
             return CloudProviderFeatures(
                 language: .supported,
-                vocabulary: .unsupported("OpenRouter's transcription endpoint has no prompt or keyterm field, so terms cannot be boosted."),
+                vocabulary: .unsupported("OpenRouter supports keyterms only on compatible model/provider routes; this app does not send provider-specific options, so terms are not boosted."),
                 audioSpeed: .supported,
                 cleanup: .supported,
                 usage: .unsupported("Neurons are a Cloudflare billing unit. OpenRouter reports per-request cost on its activity page.")

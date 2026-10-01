@@ -59,7 +59,7 @@ Cost: Inference Providers bills per request against a free monthly credit allowa
 1. Create a key at [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) and add credit.
 2. Paste it into the key field.
 
-Models are `openai/whisper-large-v3-turbo` (default), `openai/whisper-large-v3`, `deepgram/nova-3`, `openai/gpt-4o-mini-transcribe`, and `openai/gpt-4o-transcribe`. OpenRouter serves 19 speech-to-text models in total; this list covers the three reasons to switch, which are matching the Cloudflare default, lowest cost, and highest accuracy.
+Models include the existing `openai/whisper-large-v3-turbo` (default), `openai/whisper-large-v3`, `deepgram/nova-3`, `openai/gpt-4o-mini-transcribe`, and `openai/gpt-4o-transcribe`, plus `google/gemini-3.5-transcribe`, `fish-audio/transcribe-1-pro`, `assemblyai/universal-3-5-pro`, `meta/muse-voice-transcribe-1.0`, `microsoft/mai-transcribe-2`, `qwen/qwen3-asr-1.7b`, `qwen/qwen3-asr-0.6b`, and `openai/gpt-transcribe`. The eight newly added entries start in automatic language detection mode; the app does not claim model-specific language pinning or vocabulary boosting until it has a verified compatible wire option.
 
 Cost: pay per request with no subscription, at each upstream provider's rate plus OpenRouter's fee. Every response reports its own `usage.cost`, and the [activity page](https://openrouter.ai/activity) is the authority. Recordings are capped at 25 MB and upstream providers time out after about 60 seconds.
 
@@ -68,7 +68,7 @@ Cost: pay per request with no subscription, at each upstream provider's rate plu
 | | Cloudflare | Hugging Face | OpenRouter |
 |---|---|---|---|
 | Language pinning | yes, per model | **no**, the speech pipeline rejects a language parameter | yes, ISO-639-1 |
-| Vocabulary boosting | yes, on Nova-3 and Whisper turbo | **no**, the pipeline takes no decoder prompt | **no**, the endpoint has no prompt field |
+| Vocabulary boosting | yes, on Nova-3 and Whisper turbo | **no**, the pipeline takes no decoder prompt | model/provider-specific; this app does not send optional keyterm routes |
 | Audio speed | yes | yes | yes |
 | LLM cleanup | yes, on Workers AI | yes, on the HF router | yes, on OpenRouter |
 | Neuron usage readout | yes | no, not a Cloudflare account | no, not a Cloudflare account |
