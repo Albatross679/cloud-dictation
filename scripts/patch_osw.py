@@ -1578,6 +1578,17 @@ def patch_usage_metrics() -> None:
     patch(path, "    init() {\n        loadEngine()",
           "    private let usageMetricsStore: UsageMetricsStore\n\n    init(metricsStore: UsageMetricsStore = .shared) {\n        self.usageMetricsStore = metricsStore\n        loadEngine()",
           "Usage: injectable local store")
+    patch(path, "    private var isCancelled = false", "    private var isCancelled = false\n    private var usageServiceBusy = false",
+          "Usage: duration preparation gate")
+    patch(path, "        // Serialize access to the engine: a whisper context must not process",
+          '''        // Reserve the whole call before the asynchronous original-duration read.
+        // Otherwise indicator and queue calls can both pass the engine busy check.
+        while usageServiceBusy { try await Task.sleep(nanoseconds: 1_000_000) }
+        usageServiceBusy = true
+        defer { usageServiceBusy = false }
+
+        // Serialize access to the engine: a whisper context must not process''',
+          "Usage: serialize preparation and decoding")
     patch(path, "    private var currentEngine: TranscriptionEngine?",
           "    private var currentEngine: TranscriptionEngine?\n    private var usageLoadedSelection: UsageSelection?",
           "Usage: loaded model snapshot")

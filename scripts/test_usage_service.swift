@@ -22,12 +22,22 @@ protocol TranscriptionEngine: AnyObject {
     func transcribeAudio(url: URL, settings: Settings) async throws -> String
     func cancelTranscription()
 }
+actor EngineConcurrency {
+    var active = 0
+    var maximum = 0
+    func enter() { active += 1; maximum = max(maximum, active) }
+    func leave() { active -= 1 }
+}
 class FakeEngine: TranscriptionEngine {
+    static let concurrency = EngineConcurrency()
     var onProgressUpdate: ((Float) -> Void)?
     static var fail = false
     func initialize() async throws {}
     func cancelTranscription() {}
     func transcribeAudio(url: URL, settings: Settings) async throws -> String {
+        await Self.concurrency.enter()
+        try await Task.sleep(nanoseconds: 30_000_000)
+        await Self.concurrency.leave()
         if self is CloudflareEngine {
             let seconds = await UsageTracking.audioSeconds(url)
             _ = try await UsageTracking.send(provider: "openrouter", model: "sample-model", phase: "transcription", seconds: seconds.map { $0 / 1.5 }) {
@@ -80,5 +90,11 @@ final class FluidAudioEngine: FakeEngine {}
         precondition(final.dictations.count == 2 && final.dictations[1].originalSeconds == 3 && final.requests.count == 2)
         precondition(final.dictations[1].provider == "fluidaudio" && final.runs.last?.outcome == "success")
         print("PASS actual service local inference adds original duration and no cloud API request")
+        async let first = service.transcribeAudio(url: wav, settings: Settings(), metricID: UUID(), recordedAt: recordedAt)
+        async let second = service.transcribeAudio(url: wav, settings: Settings(), metricID: UUID(), recordedAt: recordedAt)
+        _ = try await (first, second)
+        let maximum = await FakeEngine.concurrency.maximum
+        precondition(maximum == 1 && store.snapshot().archive.dictations.count == 4)
+        print("PASS original-duration await does not let concurrent queue/indicator decodes overlap")
     }
 }
