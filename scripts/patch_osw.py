@@ -32,6 +32,7 @@ class PatchError(Exception):
 PATCH_SENTINELS = {
     "Settings: view model properties": "    @Published var cloudflareEndpoint: String {",
     "Settings: cloudflare panel": "    private var cloudflareSettings: some View {",
+    "AppPreferences: cloudflare keys": '    @UserDefault(key: "cloudflareEndpoint", defaultValue: "")',
 }
 
 
@@ -75,6 +76,7 @@ def add_engine_file() -> None:
         ("CloudflareUsageView.swift", "Engines"),
         ("DictationFailure.swift", "Engines"),
         ("AuthTokenStore.swift", "Utils"),
+        ("LocalCredentialStore.swift", "Utils"),
         ("CloudflareSetupView.swift", "Onboarding"),
     ):
         shutil.copyfile(ROOT / "src" / "client" / name, APP / subdir / name)
@@ -99,8 +101,8 @@ def patch_preferences() -> None:
     @UserDefault(key: "cloudflareAccountID", defaultValue: "")
     var cloudflareAccountID: String
 
-    /// Keychain rather than UserDefaults: a bearer token in a plist is readable
-    /// with `defaults read` by anything running as this user.
+    /// User-approved local settings, separate from the app bundle. Legacy
+    /// Keychain entries are preserved and imported only without prompting.
     var cloudflareAuthToken: String {
         get { AuthTokenStore.token }
         set { AuthTokenStore.token = newValue }
@@ -116,7 +118,7 @@ def patch_preferences() -> None:
     @UserDefault(key: "cloudProvider", defaultValue: "cloudflare")
     var cloudProvider: String
 
-    /// One Keychain entry per provider. Switching provider must never
+    /// Separate local settings keys per provider. Switching provider must never
     /// overwrite another vendor's key, and no two providers share one.
     var huggingFaceAPIToken: String {
         get { AuthTokenStore.key(for: .huggingface) }
@@ -681,7 +683,7 @@ def patch_settings() -> None:
             )
             .textFieldStyle(.roundedBorder)
 
-            Text("Stored in this Mac's Keychain under its own entry, so switching provider never overwrites another key.")
+            Text("Stored as plaintext in a private local settings file, with a separate key for each provider.")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -712,7 +714,7 @@ def patch_settings() -> None:
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
-                Text("Paste a Workers AI API Token and the app finds its account automatically. Create one from Workers AI > Use REST API; it stays in this Mac's Keychain.")
+                Text("Paste a Workers AI API Token and the app finds its account automatically. Create one from Workers AI > Use REST API; it is saved in your private local settings file.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             } else {
@@ -794,6 +796,100 @@ def patch_combined_engine_selection() -> None:
             "",
             "Settings: remove obsolete provider bar",
         )
+
+
+def patch_local_credentials() -> None:
+    preferences = APP / "Utils" / "AppPreferences.swift"
+    patch(preferences,
+        '''    /// Keychain rather than UserDefaults: a bearer token in a plist is readable
+    /// with `defaults read` by anything running as this user.''',
+        '''    /// User-approved local settings, separate from the app bundle. Legacy
+    /// Keychain entries are preserved and imported only without prompting.''',
+        "Preferences: local credential storage description")
+    patch(preferences,
+        '''    /// One Keychain entry per provider. Switching provider must never
+    /// overwrite another vendor's key, and no two providers share one.''',
+        '''    /// Separate local settings keys per provider. Switching provider must never
+    /// overwrite another vendor's key, and no two providers share one.''',
+        "Preferences: separate local provider keys")
+    settings = APP / "Settings.swift"
+    patch(settings,
+        '    @Published var huggingFaceAPIToken: String {',
+        '''    private var isRefreshingCloudCredentials = false
+
+    var credentialStorageMessage: String? {
+        AuthTokenStore.persistenceError ?? AuthTokenStore.importMessage(
+            for: cloudProviderCase, connectionMode: cloudflareConnectionMode)
+    }
+
+    func refreshLocalCredentials(importEnvironment: Bool = false) {
+        if importEnvironment { AuthTokenStore.importEnvironment() }
+        else { AuthTokenStore.reload() }
+        isRefreshingCloudCredentials = true
+        defer { isRefreshingCloudCredentials = false }
+        let prefs = AppPreferences.shared
+        cloudflareAuthToken = prefs.cloudflareAuthToken
+        cloudflareDirectAPIToken = prefs.cloudflareDirectAPIToken
+        huggingFaceAPIToken = prefs.huggingFaceAPIToken
+        openRouterAPIToken = prefs.openRouterAPIToken
+        cloudflareTestStatus = .idle
+    }
+
+    @Published var huggingFaceAPIToken: String {''',
+        "Settings: local credential refresh")
+    for property in ("huggingFaceAPIToken", "openRouterAPIToken", "cloudflareAuthToken"):
+        patch(settings,
+            f"        didSet {{ AppPreferences.shared.{property} = {property} }}",
+            f"        didSet {{ if !isRefreshingCloudCredentials {{ AppPreferences.shared.{property} = {property} }} }}",
+            f"Settings: avoid writing {property} on refresh")
+    patch(settings,
+        '''    @Published var cloudflareDirectAPIToken: String {
+        didSet {
+            AppPreferences.shared.cloudflareDirectAPIToken = cloudflareDirectAPIToken''',
+        '''    @Published var cloudflareDirectAPIToken: String {
+        didSet {
+            guard !isRefreshingCloudCredentials else { return }
+            AppPreferences.shared.cloudflareDirectAPIToken = cloudflareDirectAPIToken''',
+        "Settings: avoid writing Direct API key on refresh")
+    patch(settings,
+        '''                Text("Paste a Workers AI API Token and the app finds its account automatically. Create one from Workers AI > Use REST API; it stays in this Mac's Keychain.")''',
+        '''                Text("Paste a Workers AI API Token and the app finds its account automatically. Create one from Workers AI > Use REST API; it is saved in your private local settings file.")''',
+        "Settings: Direct API local storage note")
+    patch(settings,
+        '''            Text("Stored in this Mac's Keychain under its own entry, so switching provider never overwrites another key.")''',
+        '''            Text("Stored as plaintext in a private local settings file, with a separate key for each provider.")''',
+        "Settings: local storage note")
+    patch(settings,
+        '''        VStack(alignment: .leading, spacing: 12) {
+            if viewModel.cloudProviderCase == .cloudflare {''',
+        '''        VStack(alignment: .leading, spacing: 12) {
+            Text("API keys are plaintext in this Mac's private Application Support/OSW Cloud/credentials.json, not in the app or Keychain. Keep this file private.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let message = viewModel.credentialStorageMessage {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Button("Import keys from environment") {
+                    viewModel.refreshLocalCredentials(importEnvironment: true)
+                }
+                Button("Reload local settings") {
+                    viewModel.refreshLocalCredentials()
+                }
+            }
+            if viewModel.cloudProviderCase == .cloudflare {''',
+        "Settings: local storage status and explicit import")
+    patch(settings,
+        '''            do {
+                if cloudProviderCase == .cloudflare {''',
+        '''            do {
+                try AuthTokenStore.validateStorage(for: cloudProviderCase, connectionMode: cloudflareConnectionMode)
+                if cloudProviderCase == .cloudflare {''',
+        "Settings: surface local persistence errors before connection test")
 
 
 def patch_shortcut_behavior() -> None:
@@ -1456,6 +1552,7 @@ def main() -> int:
         patch_service()
         patch_settings()
         patch_combined_engine_selection()
+        patch_local_credentials()
         patch_shortcut_behavior()
         patch_cloudflare_setup()
         patch_menu_bar()

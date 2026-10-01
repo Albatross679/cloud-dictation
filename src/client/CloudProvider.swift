@@ -24,8 +24,8 @@ enum CloudProvider: String, CaseIterable, Equatable {
         }
     }
 
-    /// Separate Keychain accounts. A user switching providers must never have
-    /// one vendor's key overwritten by another's, and no key is ever shared.
+    /// Stable credential keys, retained from the legacy Keychain accounts for
+    /// one-time migration. Providers never share or overwrite another key.
     var keychainAccount: String {
         switch self {
         case .cloudflare: return "cloudflareDirectAPIToken"

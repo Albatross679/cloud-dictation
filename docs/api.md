@@ -8,7 +8,7 @@
 | `POST /usage/reset` | bearer | clear the counters |
 | `POST /transcribe` | bearer | audio bytes in, JSON out |
 
-Auth is a single bearer token compared in constant time, set as the `AUTH_TOKEN` secret. The app keeps its copy in the login Keychain, not UserDefaults.
+Auth is a single bearer token compared in constant time, set as the `AUTH_TOKEN` secret. The app keeps its copy in the private local plaintext credentials file described in [README](../README.md#local-api-key-settings). Legacy Keychain entries are preserved and imported only without prompting.
 
 ## Direct Workers AI API mode
 

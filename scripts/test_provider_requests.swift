@@ -332,9 +332,9 @@ enum ProviderRequestTests {
             }
         }
 
-        // Each provider owns a distinct Keychain entry, so no two share a key.
+        // Each provider keeps a distinct credential key, including legacy migration.
         let accounts = CloudProvider.allCases.map(\.keychainAccount)
-        check("keychain accounts are distinct", Set(accounts).count == accounts.count, "\(accounts)")
+        check("credential storage keys are distinct", Set(accounts).count == accounts.count, "\(accounts)")
         check("an unknown stored value falls back to cloudflare", CloudProvider.named("nonsense") == .cloudflare)
         check("a known stored value is honoured", CloudProvider.named("openrouter") == .openrouter)
     }

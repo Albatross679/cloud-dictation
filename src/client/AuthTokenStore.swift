@@ -1,92 +1,107 @@
 import Foundation
 import Security
 
-/// Keychain storage for the worker bearer token.
-///
-/// UserDefaults writes a plain plist under ~/Library/Preferences, so the token
-/// was readable with `defaults read` by anything running as the user. The
-/// Keychain item is created with `kSecAttrAccessibleAfterFirstUnlock` so a
-/// launch-at-login app can still reach it without the login keychain being
-/// unlocked interactively.
+/// User-approved local plaintext settings. Existing Keychain accounts are read
+/// once, without UI, only when creating a missing local file. They are never
+/// modified or deleted. Regular startup/settings/dictation use the file cache.
 enum AuthTokenStore {
     private static let service = "local.clouddictation.OpenSuperWhisper"
     private static let workerAccount = "cloudflareAuthToken"
     private static let directAPIAccount = "cloudflareDirectAPIToken"
-    private static let legacyDefaultsKey = "cloudflareAuthToken"
+    static let fileURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("OSW Cloud", isDirectory: true)
+        .appendingPathComponent("credentials.json")
+    private static let store = LocalCredentialStore(fileURL: fileURL, migrate: migrateLegacy)
 
-    /// The token used by the self-hosted Worker connection mode.
     static var token: String {
-        get {
-            if let stored = read(account: workerAccount) { return stored }
-            // One-time move of a token written before Keychain storage existed.
-            if let legacy = UserDefaults.standard.string(forKey: legacyDefaultsKey), !legacy.isEmpty {
-                write(legacy, account: workerAccount)
-                UserDefaults.standard.removeObject(forKey: legacyDefaultsKey)
-                return legacy
-            }
-            return ""
-        }
-        set { write(newValue, account: workerAccount) }
+        get { store.value(for: workerAccount) }
+        set { store.set(newValue, for: workerAccount) }
     }
-
-    /// Kept separately so switching connection modes never overwrites a
-    /// working Worker secret with the user's Cloudflare API token.
     static var directAPIToken: String {
-        get { read(account: directAPIAccount) ?? "" }
-        set { write(newValue, account: directAPIAccount) }
+        get { store.value(for: directAPIAccount) }
+        set { store.set(newValue, for: directAPIAccount) }
     }
-
-    /// One Keychain entry per cloud provider, named by
-    /// `CloudProvider.keychainAccount`. Separate entries mean switching
-    /// provider never overwrites another vendor's key, and no two providers
-    /// ever read the same secret.
     static func key(for provider: CloudProvider) -> String {
-        read(account: provider.keychainAccount) ?? ""
+        store.value(for: provider.keychainAccount)
     }
-
     static func setKey(_ value: String, for provider: CloudProvider) {
-        write(value, account: provider.keychainAccount)
+        store.set(value, for: provider.keychainAccount)
     }
 
-    private static func baseQuery(account: String) -> [String: Any] {
+    static var persistenceError: String? { store.error?.localizedDescription }
+
+    static func importMessage(for provider: CloudProvider, connectionMode: String) -> String? {
+        let account = provider == .cloudflare && connectionMode != "direct" ? workerAccount : provider.keychainAccount
+        guard store.needsImport(account), store.value(for: account).isEmpty else { return nil }
+        return "The previous \(provider.label) key could not be imported without a Keychain prompt. Paste it here or import it from your environment. Existing Keychain entries were left untouched."
+    }
+
+    static func validatePersistence() throws {
+        if let error = store.error { throw error }
+    }
+
+    static func validateStorage(for provider: CloudProvider, connectionMode: String) throws {
+        try validatePersistence()
+        if let message = importMessage(for: provider, connectionMode: connectionMode) {
+            throw ImportError(message: message)
+        }
+    }
+
+    /// Explicit Settings action only. Never silently override an existing key
+    /// or use an environment variable as an implicit transcription fallback.
+    static func importEnvironment() {
+        let environment = ProcessInfo.processInfo.environment
+        var candidates: [String: String] = [:]
+        for (account, name) in [
+            (workerAccount, "CLOUD_DICTATION_WORKER_TOKEN"),
+            (directAPIAccount, "CLOUD_DICTATION_DIRECT_API_TOKEN"),
+            (CloudProvider.huggingface.keychainAccount, "HF_TOKEN"),
+            (CloudProvider.openrouter.keychainAccount, "OPENROUTER_API_KEY"),
+        ] {
+            if let value = environment[name] { candidates[account] = value }
+        }
+        store.importMissing(candidates)
+    }
+
+    static func reload() { store.reload() }
+
+    private struct ImportError: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    /// Pure query contract for the one-time migration, testable without calling
+    /// Security or reading a real credential. Approval-required reads fail.
+    static func legacyMigrationQuery(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
         ]
     }
 
-    private static func read(account: String) -> String? {
-        var query = baseQuery(account: account)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data,
-              let value = String(data: data, encoding: .utf8),
-              !value.isEmpty
-        else { return nil }
-        return value
-    }
-
-    private static func write(_ value: String, account: String) {
-        let query = baseQuery(account: account)
-        guard !value.isEmpty else {
-            SecItemDelete(query as CFDictionary)
-            return
+    private static func migrateLegacy() -> LocalCredentialStore.Migration {
+        var result = LocalCredentialStore.Migration()
+        // A pre-Keychain Worker token already present in defaults is supported
+        // once. Leave defaults and all existing Keychain entries untouched.
+        if let old = UserDefaults.standard.string(forKey: workerAccount), !old.isEmpty {
+            result.credentials[workerAccount] = old
         }
-
-        let data = Data(value.utf8)
-        let attributes: [String: Any] = [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
-        ]
-
-        if SecItemUpdate(query as CFDictionary, attributes as CFDictionary) == errSecItemNotFound {
-            var insert = query
-            insert.merge(attributes) { current, _ in current }
-            SecItemAdd(insert as CFDictionary, nil)
+        for account in [workerAccount, directAPIAccount, CloudProvider.huggingface.keychainAccount, CloudProvider.openrouter.keychainAccount] {
+            guard result.credentials[account] == nil else { continue }
+            let query = legacyMigrationQuery(account: account)
+            var item: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &item)
+            if status == errSecSuccess, let data = item as? Data,
+               let value = String(data: data, encoding: .utf8), !value.isEmpty {
+                result.credentials[account] = value
+            } else if status != errSecItemNotFound {
+                result.importNeeded.append(account)
+            }
         }
+        return result
     }
 }

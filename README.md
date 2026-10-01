@@ -43,7 +43,15 @@ You do **not** need to deploy a Worker. The app can call Workers AI in your Clou
 
 ## Other providers
 
-Cloudflare remains the default cloud provider. **Settings > Models > Engine** has one bar with **Parakeet**, **Whisper**, **Cloudflare**, **Hugging Face**, and **OpenRouter**. The first two run locally; the other three upload to their selected provider. Each provider keeps its own API key in its own Keychain entry, so switching never overwrites another key, and **Test Connection** works for all three.
+Cloudflare remains the default cloud provider. **Settings > Models > Engine** has one bar with **Parakeet**, **Whisper**, **Cloudflare**, **Hugging Face**, and **OpenRouter**. The first two run locally; the other three upload to their selected provider. Each provider keeps a separate API key in a private local settings file, so switching never overwrites another key. **Test Connection** is available for all three; a valid key does not guarantee access to every model.
+
+### Local API key settings
+
+API keys are **plaintext**, stored at `~/Library/Application Support/OSW Cloud/credentials.json`, not embedded in the app. The file is mode `0600`, its parent is `0700`, and writes are atomic. Other processes running as your Mac user and backups can still read it. This storage tradeoff was explicitly approved; keep the file private and out of git, app bundles and shared archives.
+
+When the file is missing, the app attempts one no-prompt import of existing Keychain entries and an old Worker token already in UserDefaults. Existing Keychain entries and unrelated preferences are left untouched. Keys needing Keychain approval are not retried silently: the app shows an import notice and accepts a fresh paste. A damaged settings file is not overwritten, and save failures appear in Settings and block cloud requests until fixed. **Reload local settings** retries after a repair.
+
+**Import keys from environment** is an explicit Settings action and never replaces an existing key. It reads `CLOUD_DICTATION_WORKER_TOKEN`, `CLOUD_DICTATION_DIRECT_API_TOKEN`, `HF_TOKEN`, and `OPENROUTER_API_KEY` from the app process environment. GUI-launched apps may not inherit your shell environment, so pasting into the selected provider's key field is usually simpler. No Mac password is collected by the app.
 
 ### Hugging Face
 

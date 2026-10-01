@@ -66,6 +66,7 @@ final class CloudflareSetupViewModel: ObservableObject {
 
         Task {
             do {
+                try AuthTokenStore.validatePersistence()
                 try await ensureMicrophoneAccess()
                 guard MicrophoneService.shared.getActiveMicrophone() != nil else {
                     throw SetupError.noMicrophone
@@ -98,6 +99,7 @@ final class CloudflareSetupViewModel: ObservableObject {
                 let prefs = AppPreferences.shared
                 prefs.cloudflareConnectionMode = "direct"
                 prefs.cloudflareDirectAPIToken = candidate
+                try AuthTokenStore.validatePersistence()
                 prefs.cloudflareAccountID = accountID
                 prefs.selectedEngine = "cloudflare"
                 state = .succeeded(text)
@@ -188,6 +190,16 @@ struct CloudflareSetupView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
+                Text("Keys are plaintext in a private local settings file, not in the app or Keychain. Existing Keychain entries are not changed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let message = AuthTokenStore.persistenceError ?? AuthTokenStore.importMessage(for: .cloudflare, connectionMode: "direct") {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Text("Paste your API token")
                     .font(.headline)
                 SecureField("Workers AI API token", text: $viewModel.token)

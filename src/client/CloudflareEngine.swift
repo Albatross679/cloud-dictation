@@ -386,7 +386,7 @@ extension CloudflareClient: CloudTranscriber {
 
 /// Reads the current provider and its per-provider settings.
 ///
-/// Each provider owns its own model, cleanup model, and Keychain key, because a
+/// Each provider owns its own model, cleanup model, and credential key, because a
 /// model key is only meaningful to the vendor that publishes it: switching to
 /// Hugging Face must not leave "nova-3" selected, and switching back must not
 /// have lost the Cloudflare choice.
@@ -671,6 +671,10 @@ class CloudflareEngine: TranscriptionEngine {
     }
 
     func transcribeAudio(url: URL, settings: Settings) async throws -> String {
+        try AuthTokenStore.validateStorage(
+            for: CloudProviderSelection.current,
+            connectionMode: AppPreferences.shared.cloudflareConnectionMode
+        )
         isCancelled = false
         onProgressUpdate?(0.05)
 

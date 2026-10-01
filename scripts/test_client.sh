@@ -24,6 +24,12 @@ swiftc -O -o "$OUT/test_provider_clients" \
   "$ROOT/src/client/OpenRouterRequest.swift" \
   "$ROOT/scripts/test_provider_clients.swift"
 
+swiftc -O -o "$OUT/test_local_credentials" \
+  "$ROOT/src/client/CloudProvider.swift" \
+  "$ROOT/src/client/LocalCredentialStore.swift" \
+  "$ROOT/src/client/AuthTokenStore.swift" \
+  "$ROOT/scripts/test_local_credentials.swift"
+
 # Compile the private AVFoundation compressor verbatim with its tests. Keep
 # extraction bounded by declarations so no app preferences or native engines
 # are stubbed, and a moved declaration fails rather than testing stale code.
@@ -51,6 +57,10 @@ echo "== Hugging Face and OpenRouter requests =="
 echo
 echo "== Provider clients, stubbed HTTP =="
 "$OUT/test_provider_clients"
+
+echo
+echo "== Local credential file, fake keys only =="
+"$OUT/test_local_credentials"
 
 echo
 echo "== Audio speed, offline AVFoundation =="
