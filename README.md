@@ -67,7 +67,7 @@ Cost: pay per request with no subscription, at each upstream provider's rate plu
 
 | | Cloudflare | Hugging Face | OpenRouter |
 |---|---|---|---|
-| Language pinning | yes, per model | **no**, the speech pipeline rejects a language parameter | yes, ISO-639-1 |
+| Language pinning | yes, per model | **no**, the speech pipeline rejects a language parameter | per model; eight new entries are auto-only |
 | Vocabulary boosting | yes, on Nova-3 and Whisper turbo | **no**, the pipeline takes no decoder prompt | model/provider-specific; this app does not send optional keyterm routes |
 | Audio speed | yes | yes | yes |
 | LLM cleanup | yes, on Workers AI | yes, on the HF router | yes, on OpenRouter |
@@ -95,3 +95,4 @@ repos/            upstream checkout, generated, gitignored
 - [docs/models.md](docs/models.md) - which model to pick, languages, vocabulary, measured accuracy and cost
 - [docs/api.md](docs/api.md) - worker endpoints and parameters
 - [docs/building.md](docs/building.md) - build requirements, signing, packaging, reproducibility
+- [docs/functionality-check.md](docs/functionality-check.md) - synthetic request checks, unavailable models, offline regressions, and recorder-test limits

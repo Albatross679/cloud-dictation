@@ -163,7 +163,9 @@ enum OpenRouterRequest {
             "model": model.id,
             "input_audio": ["data": audio.base64EncodedString(), "format": format],
         ]
-        if language != "auto" { payload["language"] = language }
+        // A stale language selection must not send an unverified option to
+        // an auto-only model, including calls outside the settings picker.
+        if language != "auto", model.languages != [] { payload["language"] = language }
 
         return CloudRequestPlan(
             url: url,
@@ -174,9 +176,14 @@ enum OpenRouterRequest {
         )
     }
 
-    static func readText(_ data: Data) -> String? {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        return object["text"] as? String
+    static func readText(_ data: Data, model key: String? = nil) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let text = object["text"] as? String else { return nil }
+        guard key == "fish-audio-transcribe-1-pro" else { return text }
+        // Fish returns control tokens even without requesting diarization.
+        // They describe speakers, not spoken words, and must not be pasted.
+        return text.replacingOccurrences(of: "<\\|speaker:[0-9]+\\|>", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func cleanup(model id: String, system: String, text: String) throws -> CloudRequestPlan {
@@ -227,8 +234,13 @@ struct OpenRouterClient: CloudTranscriber {
         let plan = try OpenRouterRequest.transcription(model: modelKey, audio: audio, language: language)
         // Upstream providers cut off around 60 seconds, so waiting the
         // Cloudflare path's five minutes would only delay the error.
-        let data = try await CloudHTTP.send(plan, provider: .openrouter, bearer: key, timeout: 120)
-        var text = (OpenRouterRequest.readText(data) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let data: Data
+        do {
+            data = try await CloudHTTP.send(plan, provider: .openrouter, bearer: key, timeout: 120)
+        } catch let CloudProviderError.badStatus(_, 403, detail) {
+            throw CloudProviderError.modelUnavailable(.openrouter, try OpenRouterRequest.model(modelKey).id, detail)
+        }
+        var text = (OpenRouterRequest.readText(data, model: modelKey) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw CloudProviderError.emptyTranscript(.openrouter) }
 
         if values["cleanup"] == "1" {

@@ -575,7 +575,9 @@ private enum CloudflareAudioCompressor {
         )
         var framesWritten: AVAudioFrameCount = 0
         var stalledRenders = 0
-        while !playbackCompletion.isComplete {
+        // The player can finish before AVAudioUnitTimePitch has drained its
+        // buffered output. Keep rendering that tail up to the target duration.
+        while !playbackCompletion.isComplete || framesWritten < expectedFrameCount {
             switch try engine.renderOffline(engine.manualRenderingMaximumFrameCount, to: buffer) {
             case .success:
                 stalledRenders = 0

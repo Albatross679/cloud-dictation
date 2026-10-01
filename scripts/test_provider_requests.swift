@@ -183,6 +183,8 @@ enum ProviderRequestTests {
             let body = payload(try! OpenRouterRequest.transcription(model: model.key, audio: audio, language: "auto"))
             check("\(id) is sent exactly", body["model"] as? String == id, String(describing: body["model"]))
             check("\(id) sends no unsupported language", body["language"] == nil)
+            let stale = payload(try! OpenRouterRequest.transcription(model: model.key, audio: audio, language: "en"))
+            check("\(id) ignores stale pinned language", stale["language"] == nil)
         }
     }
 
@@ -217,6 +219,10 @@ enum ProviderRequestTests {
         check("text", OpenRouterRequest.readText(body) == "ask not")
         check("empty result", OpenRouterRequest.readText(Data("{}".utf8)) == nil)
         check("non-string text is rejected", OpenRouterRequest.readText(Data(#"{"text":42}"#.utf8)) == nil)
+        let fish = Data(#"{"text":"<|speaker:0|> Hello.\n<|speaker:12|> Goodbye."}"#.utf8)
+        check("fish speaker controls are removed", OpenRouterRequest.readText(fish, model: "fish-audio-transcribe-1-pro") == "Hello.\n Goodbye.")
+        check("other models' literal text stays intact", OpenRouterRequest.readText(fish, model: "whisper-large-v3")?.contains("<|speaker:0|>") == true)
+        check("fish token-only reply becomes empty", OpenRouterRequest.readText(Data(#"{"text":"<|speaker:0|>"}"#.utf8), model: "fish-audio-transcribe-1-pro") == "")
     }
 
     static func unknownModelsAreRejected() {
@@ -364,5 +370,9 @@ enum ProviderRequestTests {
             CloudHTTP.errorMessage(from: #"{"error":{"message":"User not found.","code":401}}"#) == "User not found."
         )
         check("a non-JSON body survives", CloudHTTP.errorMessage(from: "Not Found") == "Not Found")
+        check("401 means invalid key", CloudHTTP.responseError(provider: .openrouter, status: 401, body: "bad key") == .invalidKey(.openrouter, "bad key"))
+        check("403 is not mislabeled as invalid key", CloudHTTP.responseError(provider: .openrouter, status: 403, body: "age confirmation required") == .badStatus(.openrouter, 403, "age confirmation required"))
+        let gated = CloudProviderError.modelUnavailable(.openrouter, "meta/muse-voice-transcribe-1.0", "18+ age confirmation required")
+        check("unavailable model has actionable error", gated.errorDescription?.contains("meta/muse-voice-transcribe-1.0 is unavailable for this account: 18+ age confirmation required") == true)
     }
 }
