@@ -42,6 +42,7 @@ enum ProviderRequestTests {
         huggingFaceReadsItsResponse()
         openRouterSendsBase64ToTheSTTEndpoint()
         openRouterPinsLanguage()
+        openRouterRegistersRequestedModels()
         openRouterRejectsOversizedAudio()
         openRouterReadsItsResponse()
         unknownModelsAreRejected()
@@ -157,6 +158,34 @@ enum ProviderRequestTests {
         }
     }
 
+    static func openRouterRegistersRequestedModels() {
+        section("openrouter registers every requested transcription model exactly")
+        let requested = [
+            "google/gemini-3.5-transcribe",
+            "fish-audio/transcribe-1-pro",
+            "assemblyai/universal-3-5-pro",
+            "meta/muse-voice-transcribe-1.0",
+            "microsoft/mai-transcribe-2",
+            "qwen/qwen3-asr-1.7b",
+            "qwen/qwen3-asr-0.6b",
+            "openai/gpt-transcribe",
+        ]
+        let ids = OpenRouterRequest.catalog.map(\.id)
+        check("all eight exact ids appear once", requested.allSatisfy { requestedID in ids.filter { $0 == requestedID }.count == 1 }, "\(ids)")
+        check("default remains unchanged", OpenRouterRequest.defaultModelKey == "whisper-large-v3-turbo")
+
+        for id in requested {
+            guard let model = OpenRouterRequest.catalog.first(where: { $0.id == id }) else {
+                check("\(id) has a picker entry", false)
+                continue
+            }
+            check("\(id) is auto-detect only until verified", model.languages == [], "\(String(describing: model.languages))")
+            let body = payload(try! OpenRouterRequest.transcription(model: model.key, audio: audio, language: "auto"))
+            check("\(id) is sent exactly", body["model"] as? String == id, String(describing: body["model"]))
+            check("\(id) sends no unsupported language", body["language"] == nil)
+        }
+    }
+
     // OpenRouter caps uploads at 25 MB. Rejecting locally names a size the user
     // recognises instead of surfacing the vendor's truncated upload error.
     static func openRouterRejectsOversizedAudio() {
@@ -187,6 +216,7 @@ enum ProviderRequestTests {
         let body = Data(#"{"text":"ask not","usage":{"seconds":9.2,"cost":0.000508}}"#.utf8)
         check("text", OpenRouterRequest.readText(body) == "ask not")
         check("empty result", OpenRouterRequest.readText(Data("{}".utf8)) == nil)
+        check("non-string text is rejected", OpenRouterRequest.readText(Data(#"{"text":42}"#.utf8)) == nil)
     }
 
     static func unknownModelsAreRejected() {
@@ -317,6 +347,10 @@ enum ProviderRequestTests {
         check(
             "not configured points at settings",
             CloudProviderError.notConfigured(.openrouter).errorDescription?.contains("Settings > Models > Engine") == true
+        )
+        check(
+            "empty transcript names the provider and recovery",
+            CloudProviderError.emptyTranscript(.openrouter).errorDescription?.contains("OpenRouter returned no words") == true
         )
 
         // The two vendors nest their message differently, and both must reduce

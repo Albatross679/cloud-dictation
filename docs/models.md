@@ -105,7 +105,7 @@ Other Hugging Face providers do serve Whisper: fal-ai, replicate, together, and 
 
 OpenRouter has had a dedicated speech-to-text endpoint since 2026-05-01, so audio does not go through chat completions as an `input_audio` content part. Requests go to `POST https://openrouter.ai/api/v1/audio/transcriptions` with the body `{"model", "input_audio": {"data": "<base64>", "format": "wav"}, "language"?}`. The response is `{"text", "usage": {"seconds", "total_tokens", "cost"}}`. A `multipart/form-data` form is accepted too for OpenAI SDK compatibility; JSON is used here because the body is then one comparable value that a unit test can assert on.
 
-`GET /api/v1/models?output_modalities=transcription` lists 19 models. The picker offers five:
+`GET /api/v1/models?output_modalities=transcription` is the live catalogue. The picker offers the five established models plus eight requested models:
 
 | Key | Model | Why |
 |---|---|---|
@@ -114,8 +114,16 @@ OpenRouter has had a dedicated speech-to-text endpoint since 2026-05-01, so audi
 | `nova-3` | `deepgram/nova-3` | the same model the Cloudflare default uses |
 | `gpt-4o-mini-transcribe` | `openai/gpt-4o-mini-transcribe` | strong on proper nouns |
 | `gpt-4o-transcribe` | `openai/gpt-4o-transcribe` | most accurate option here |
+| `gemini-3.5-transcribe` | `google/gemini-3.5-transcribe` | Google synchronous STT |
+| `fish-audio-transcribe-1-pro` | `fish-audio/transcribe-1-pro` | Fish Audio recorded-speech STT |
+| `assemblyai-universal-3-5-pro` | `assemblyai/universal-3-5-pro` | AssemblyAI synchronous STT |
+| `muse-voice-transcribe-1.0` | `meta/muse-voice-transcribe-1.0` | Meta synchronous STT |
+| `mai-transcribe-2` | `microsoft/mai-transcribe-2` | Microsoft multilingual STT |
+| `qwen3-asr-1.7b` | `qwen/qwen3-asr-1.7b` | Qwen multilingual ASR |
+| `qwen3-asr-0.6b` | `qwen/qwen3-asr-0.6b` | compact Qwen multilingual ASR |
+| `gpt-transcribe` | `openai/gpt-transcribe` | OpenAI high-accuracy STT |
 
-Language pinning works: `language` takes an ISO-639-1 code and is omitted entirely under auto-detect, because "auto" is not a code. Vocabulary boosting does not, because the endpoint has no prompt or keyterm field. Uploads are capped at 25 MB, which the client checks before encoding so the message names a size rather than surfacing a truncated upload, and upstream providers time out after about 60 seconds.
+For established models, language pinning works where the selected model permits it: `language` takes an ISO-639-1 code and is omitted entirely under auto-detect, because "auto" is not a code. Newly added models intentionally offer auto-detect only until their individual constraints are verified. The OpenRouter STT API does define optional `keyterms`, but support is model/provider-specific; this app does not send it, so it never claims vocabulary boosting. Uploads are capped at 25 MB, which the client checks before encoding so the message names a size rather than surfacing a truncated upload, and upstream providers time out after about 60 seconds. See [OpenRouter's STT reference](https://openrouter.ai/docs/api/api-reference/stt/create-transcription).
 
 Pricing units differ per model on OpenRouter's catalogue, so no per-minute figure is quoted here. Every response carries its own `usage.cost` and the activity page is the authority.
 
