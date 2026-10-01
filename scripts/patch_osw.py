@@ -38,7 +38,7 @@ PATCH_SENTINELS = {
 def patch(path: Path, anchor: str, replacement: str, label: str) -> None:
     text = path.read_text()
     sentinel = PATCH_SENTINELS.get(label)
-    if replacement.strip() in text or (sentinel is not None and sentinel in text):
+    if (replacement.strip() and replacement.strip() in text) or (sentinel is not None and sentinel in text):
         print(f"  = {label}: already applied")
         return
     if text.count(anchor) != 1:
@@ -210,6 +210,9 @@ def patch_settings() -> None:
         didSet {
             AppPreferences.shared.cloudProvider = cloudProvider
             cloudflareTestStatus = .idle
+            // Setting a cloud choice while a local engine is active must not
+            // narrow local languages or schedule an intermediate reload.
+            guard selectedEngine == "cloudflare" else { return }
             // The new provider's models and languages differ, so the pickers
             // must be refilled before the user can pick an impossible pairing.
             let allowed = LanguageUtil.supportedLanguages(
@@ -455,25 +458,41 @@ def patch_settings() -> None:
         "Settings: init",
     )
 
-    patch(
-        path,
-        """                Picker("Engine", selection: $viewModel.selectedEngine) {
+    # Accept both upstream's two-engine anchor and our previously generated
+    # three-engine anchor. Only the combined five-choice bar is emitted.
+    engine_picker_anchor = '''                Picker("Engine", selection: $viewModel.selectedEngine) {
                     Text("Parakeet").tag("fluidaudio")
                     Text("Whisper").tag("whisper")
                 }
                 .pickerStyle(.segmented)
-                .padding(.bottom, 8)""",
-        """                Picker("Engine", selection: $viewModel.selectedEngine) {
-                    Text("Parakeet").tag("fluidaudio")
-                    Text("Whisper").tag("whisper")
-                    Text("Cloudflare").tag("cloudflare")
+                .padding(.bottom, 8)'''
+    if 'Text("Cloudflare").tag("cloudflare")' in path.read_text():
+        engine_picker_anchor = engine_picker_anchor.replace(
+            '                    Text("Whisper").tag("whisper")',
+            '                    Text("Whisper").tag("whisper")\n'
+            '                    Text("Cloudflare").tag("cloudflare")',
+        ) + '''
+
+                if viewModel.selectedEngine == "cloudflare" {
+                    cloudflareSettings
+                }'''
+    patch(
+        path,
+        engine_picker_anchor,
+        '''                Picker("Engine", selection: Binding(
+                    get: { viewModel.recognitionChoice },
+                    set: { viewModel.recognitionChoice = $0 }
+                )) {
+                    ForEach(SpeechRecognitionChoice.allCases, id: \\.rawValue) { choice in
+                        Text(choice.label).tag(choice)
+                    }
                 }
                 .pickerStyle(.segmented)
                 .padding(.bottom, 8)
 
                 if viewModel.selectedEngine == "cloudflare" {
                     cloudflareSettings
-                }""",
+                }''',
         "Settings: engine picker",
     )
 
@@ -482,15 +501,6 @@ def patch_settings() -> None:
         """    private var modelSettings: some View {""",
         '''    private var cloudflareSettings: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Provider")
-                .font(.headline)
-            Picker("Provider", selection: $viewModel.cloudProvider) {
-                ForEach(CloudProvider.allCases, id: \\.rawValue) { provider in
-                    Text(provider.label).tag(provider.rawValue)
-                }
-            }
-            .pickerStyle(.segmented)
-
             if viewModel.cloudProviderCase == .cloudflare {
                 cloudflareConnectionSettings
             } else {
@@ -721,6 +731,77 @@ def patch_settings() -> None:
 
     private var modelSettings: some View {''',
         "Settings: cloudflare panel",
+    )
+
+
+def patch_combined_engine_selection() -> None:
+    path = APP / "Settings.swift"
+    patch(
+        path,
+        '    var cloudProviderCase: CloudProvider { CloudProvider.named(cloudProvider) }',
+        '''    /// Present old engine/provider settings as one choice without rewriting
+    /// credentials, models, or the remembered cloud provider for local engines.
+    var recognitionChoice: SpeechRecognitionChoice {
+        get { SpeechRecognitionChoice.resolve(engine: selectedEngine, provider: cloudProvider) }
+        set {
+            let selection = newValue.persistedSelection(preserving: cloudProvider)
+            // Provider first: while local, its observer only persists the value.
+            // The engine observer then validates language against the final pair.
+            if cloudProvider != selection.provider { cloudProvider = selection.provider }
+            if selectedEngine != selection.engine { selectedEngine = selection.engine }
+        }
+    }
+
+    var cloudProviderCase: CloudProvider { CloudProvider.named(cloudProvider) }''',
+        "Settings: combined engine selection",
+    )
+    patch(
+        path,
+        '''            cloudflareTestStatus = .idle
+            // The new provider's models and languages differ, so the pickers''',
+        '''            cloudflareTestStatus = .idle
+            // Setting a cloud choice while a local engine is active must not
+            // narrow local languages or schedule an intermediate reload.
+            guard selectedEngine == "cloudflare" else { return }
+            // The new provider's models and languages differ, so the pickers''',
+        "Settings: defer inactive provider reload",
+    )
+    patch(
+        path,
+        '''                } else {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Parakeet Model")''',
+        '''                } else if viewModel.selectedEngine == "fluidaudio" {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Parakeet Model")''',
+        "Settings: show Parakeet models only for local Parakeet",
+    )
+    # Compatibility removal for existing generated checkouts. The replacement
+    # panel above never emits this obsolete second bar on a fresh checkout.
+    if 'Picker("Provider", selection: $viewModel.cloudProvider)' in path.read_text():
+        patch(
+            path,
+            '''            Text("Provider")
+                .font(.headline)
+            Picker("Provider", selection: $viewModel.cloudProvider) {
+                ForEach(CloudProvider.allCases, id: \\.rawValue) { provider in
+                    Text(provider.label).tag(provider.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+
+''',
+            "",
+            "Settings: remove obsolete provider bar",
+        )
+
+
+def patch_shortcut_behavior() -> None:
+    patch(
+        APP / "ShortcutManager.swift",
+        "if AppPreferences.shared.doublePressToTrigger && activeVm == nil {",
+        "if useModifierOnlyHotkey && AppPreferences.shared.doublePressToTrigger && activeVm == nil {",
+        "Shortcuts: keep modifier double-tap out of keyboard and mouse modes",
     )
 
 
@@ -1374,6 +1455,8 @@ def main() -> int:
         patch_preferences()
         patch_service()
         patch_settings()
+        patch_combined_engine_selection()
+        patch_shortcut_behavior()
         patch_cloudflare_setup()
         patch_menu_bar()
         patch_onboarding()
@@ -1388,7 +1471,7 @@ def main() -> int:
         return 1
 
     print(f"\nDone. Open {CHECKOUT / 'OpenSuperWhisper.xcodeproj'} and build.")
-    print("Settings > Models > Engine > Cloudflare, then paste the endpoint and token.")
+    print("Settings > Models > Engine: select a local engine or cloud provider, then configure its credentials.")
     return 0
 
 

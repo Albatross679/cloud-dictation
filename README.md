@@ -39,11 +39,11 @@ You do **not** need to deploy a Worker. The app can call Workers AI in your Clou
 
 - **Transcription > Language.** Nova-3 serves ten languages and errors on the rest. For anything else pick `whisper-turbo`.
 - **Transcription > Vocabulary.** A comma separated term list, not prose. `R2, Kubernetes, Workers AI`. It measurably fixes proper nouns.
-- **Cloudflare > Audio speed.** Choose `1`, `1.25`, `1.5`, `1.75`, `2`, `2.25`, `2.5`, `2.75`, or `3`; default `1` uploads the original recording unchanged. Higher speeds preserve pitch and cut billed audio minutes, but trade accuracy for cost - see the measured WER deltas in [asr-compression-cost](https://github.com/Albatross679/asr-compression-cost). 1.5 is recommended.
+- **Cloud provider > Audio speed.** Choose `1`, `1.25`, `1.5`, `1.75`, `2`, `2.25`, `2.5`, `2.75`, or `3`; default `1` uploads the original recording unchanged. Higher speeds preserve pitch and cut billed audio minutes, but trade accuracy for cost - see the measured WER deltas in [asr-compression-cost](https://github.com/Albatross679/asr-compression-cost). 1.5 is recommended.
 
 ## Other providers
 
-Cloudflare is the default and the cheapest, but the same app can transcribe through **Hugging Face** or **OpenRouter** instead. Pick one under **Settings > Models > Engine > Provider**. Each provider keeps its own API key in its own Keychain entry, so switching never overwrites another key, and **Test Connection** works for all three.
+Cloudflare remains the default cloud provider. **Settings > Models > Engine** has one bar with **Parakeet**, **Whisper**, **Cloudflare**, **Hugging Face**, and **OpenRouter**. The first two run locally; the other three upload to their selected provider. Each provider keeps its own API key in its own Keychain entry, so switching never overwrites another key, and **Test Connection** works for all three.
 
 ### Hugging Face
 
@@ -71,7 +71,7 @@ Cost: pay per request with no subscription, at each upstream provider's rate plu
 | Vocabulary boosting | yes, on Nova-3 and Whisper turbo | **no**, the pipeline takes no decoder prompt | model/provider-specific; this app does not send optional keyterm routes |
 | Audio speed | yes | yes | yes |
 | LLM cleanup | yes, on Workers AI | yes, on the HF router | yes, on OpenRouter |
-| Neuron usage readout | yes | no, not a Cloudflare account | no, not a Cloudflare account |
+| Neuron usage readout | Worker mode only; Direct API uses the dashboard | no, not a Cloudflare account | no, not a Cloudflare account |
 
 Where a feature says no, the app disables the control and prints the reason next to it rather than accepting the setting and dropping it. Audio speed is applied on your Mac before the upload, so every provider honors it. The vocabulary list still reaches the cleanup pass as known spellings even where the recognizer cannot use it.
 

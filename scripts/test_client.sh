@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Compiles and runs the Swift client's unit tests. The request encoders import
-# only Foundation, so they are testable without Xcode's project or the app's
-# whisper.cpp and Rust dependencies.
+# Compiles Swift request/client tests and offline AVFoundation audio tests.
+# Requires macOS Swift and Python 3, but not Xcode's project, downloaded local
+# models, credentials, or the app's whisper.cpp and Rust dependencies.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,7 +33,7 @@ import sys
 root, out = map(Path, sys.argv[1:])
 source = (root / 'src/client/CloudflareEngine.swift').read_text()
 start = source.index('private final class CloudflarePlaybackCompletion:')
-end = source.index('/// Transcribes through a Cloudflare Worker', start)
+end = source.index('/// Transcribes through the selected cloud provider.', start)
 (out / 'test_audio_compressor.swift').write_text(
     'import Foundation\nimport AVFoundation\n' + source[start:end]
     + (root / 'scripts/test_audio_compressor.swift').read_text()

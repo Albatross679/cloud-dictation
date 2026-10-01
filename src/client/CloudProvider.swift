@@ -52,6 +52,48 @@ enum CloudProvider: String, CaseIterable, Equatable {
     }
 }
 
+/// One UI choice, decoded from the existing engine/provider preferences.
+/// Keep their persisted schema so old installs and the menu/engine paths stay
+/// compatible. Local choices retain the last cloud provider without using it.
+enum SpeechRecognitionChoice: String, CaseIterable {
+    case parakeet = "fluidaudio"
+    case whisper
+    case cloudflare
+    case huggingface
+    case openrouter
+
+    var label: String {
+        switch self {
+        case .parakeet: return "Parakeet"
+        case .whisper: return "Whisper"
+        case .cloudflare: return "Cloudflare"
+        case .huggingface: return "Hugging Face"
+        case .openrouter: return "OpenRouter"
+        }
+    }
+
+    static func resolve(engine: String, provider: String) -> Self {
+        if engine == "fluidaudio" { return .parakeet }
+        // The engine loader historically uses Whisper for unknown values.
+        guard engine == "cloudflare" else { return .whisper }
+        switch CloudProvider.named(provider) {
+        case .cloudflare: return .cloudflare
+        case .huggingface: return .huggingface
+        case .openrouter: return .openrouter
+        }
+    }
+
+    func persistedSelection(preserving provider: String) -> (engine: String, provider: String) {
+        switch self {
+        case .parakeet: return ("fluidaudio", provider)
+        case .whisper: return ("whisper", provider)
+        case .cloudflare: return ("cloudflare", "cloudflare")
+        case .huggingface: return ("cloudflare", "huggingface")
+        case .openrouter: return ("cloudflare", "openrouter")
+        }
+    }
+}
+
 /// Whether one feature reaches the model on a given provider.
 ///
 /// A feature that cannot work must say so in the UI rather than being accepted

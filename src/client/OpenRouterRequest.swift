@@ -44,7 +44,7 @@ enum OpenRouterRequest {
             id: "openai/whisper-large-v3",
             label: "Whisper large-v3",
             languages: nil,
-            notes: "More accurate Whisper weights at roughly twice the turbo rate."
+            notes: "Whisper large-v3 weights; accepts a pinned language."
         ),
         CloudModel(
             key: "nova-3",
@@ -59,14 +59,14 @@ enum OpenRouterRequest {
             id: "openai/gpt-4o-mini-transcribe",
             label: "GPT-4o mini transcribe",
             languages: nil,
-            notes: "OpenAI's small transcription model, strong on proper nouns."
+            notes: "OpenAI's smaller transcription model."
         ),
         CloudModel(
             key: "gpt-4o-transcribe",
             id: "openai/gpt-4o-transcribe",
             label: "GPT-4o transcribe",
             languages: nil,
-            notes: "OpenAI's full transcription model. The most accurate option here."
+            notes: "OpenAI's full transcription model."
         ),
         CloudModel(
             key: "gemini-3.5-transcribe",
@@ -94,7 +94,7 @@ enum OpenRouterRequest {
             id: "meta/muse-voice-transcribe-1.0",
             label: "Meta Muse Voice Transcribe 1.0",
             languages: [],
-            notes: "Meta synchronous speech-to-text."
+            notes: "Meta synchronous speech-to-text. Some accounts require 18+ confirmation in OpenRouter preferences."
         ),
         CloudModel(
             key: "mai-transcribe-2",
@@ -122,7 +122,7 @@ enum OpenRouterRequest {
             id: "openai/gpt-transcribe",
             label: "GPT Transcribe",
             languages: [],
-            notes: "OpenAI's high-accuracy speech-to-text model."
+            notes: "OpenAI's speech-to-text model; this app uses automatic language detection."
         ),
     ]
 
@@ -266,8 +266,8 @@ struct OpenRouterClient: CloudTranscriber {
     }
 
     /// Checks the key against /key, which costs nothing and answers 401 for a
-    /// key OpenRouter does not know, then confirms the account can actually
-    /// list transcription models.
+    /// key OpenRouter does not know. Returns the local compatible catalogue,
+    /// not proof that every model is available to this account.
     func validateConnection() async throws -> [String] {
         let key = try key
         _ = try await CloudHTTP.send(OpenRouterRequest.keyProbe(), provider: .openrouter, bearer: key, timeout: 15)

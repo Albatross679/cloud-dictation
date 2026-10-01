@@ -49,6 +49,7 @@ enum ProviderRequestTests {
         noPlanCarriesACredential()
         cleanupIsEncodedTheSameForBoth()
         featureMatrixIsHonest()
+        combinedEngineChoicesPreserveLegacyState()
         errorsSeparateKeyFromReachability()
 
         print("")
@@ -336,6 +337,30 @@ enum ProviderRequestTests {
         check("keychain accounts are distinct", Set(accounts).count == accounts.count, "\(accounts)")
         check("an unknown stored value falls back to cloudflare", CloudProvider.named("nonsense") == .cloudflare)
         check("a known stored value is honoured", CloudProvider.named("openrouter") == .openrouter)
+    }
+
+    static func combinedEngineChoicesPreserveLegacyState() {
+        section("one engine bar maps legacy engine/provider state without resetting it")
+        check("five visible choices", SpeechRecognitionChoice.allCases.map(\.label) == ["Parakeet", "Whisper", "Cloudflare", "Hugging Face", "OpenRouter"])
+        for provider in CloudProvider.allCases {
+            check("legacy \(provider.rawValue) cloud selection", SpeechRecognitionChoice.resolve(engine: "cloudflare", provider: provider.rawValue).rawValue == provider.rawValue)
+            check("Parakeet ignores remembered \(provider.rawValue)", SpeechRecognitionChoice.resolve(engine: "fluidaudio", provider: provider.rawValue) == .parakeet)
+            check("Whisper ignores remembered \(provider.rawValue)", SpeechRecognitionChoice.resolve(engine: "whisper", provider: provider.rawValue) == .whisper)
+            for choice in SpeechRecognitionChoice.allCases {
+                let state = choice.persistedSelection(preserving: provider.rawValue)
+                check("\(choice.label) round-trips from \(provider.rawValue)", SpeechRecognitionChoice.resolve(engine: state.engine, provider: state.provider) == choice)
+                if choice == .parakeet || choice == .whisper {
+                    check("\(choice.label) retains cloud provider \(provider.rawValue)", state.provider == provider.rawValue)
+                } else {
+                    check("\(choice.label) still uses the shared cloud engine", state.engine == "cloudflare")
+                }
+            }
+        }
+        check("missing legacy provider retains Cloudflare", SpeechRecognitionChoice.resolve(engine: "cloudflare", provider: "") == .cloudflare)
+        check("unknown provider retains safe Cloudflare fallback", SpeechRecognitionChoice.resolve(engine: "cloudflare", provider: "unknown") == .cloudflare)
+        check("unknown engine matches historical Whisper fallback", SpeechRecognitionChoice.resolve(engine: "unknown", provider: "openrouter") == .whisper)
+        let local = SpeechRecognitionChoice.parakeet.persistedSelection(preserving: "unknown")
+        check("local transition does not rewrite even an unknown stored provider", local.provider == "unknown")
     }
 
     // Test Connection has to tell these three apart, so they must not collapse

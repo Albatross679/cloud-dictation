@@ -1,8 +1,8 @@
 import Foundation
 import AVFoundation
 
-/// Talks to the cloud-dictation worker. Shared by the transcription engine and
-/// the Test Connection button so both agree on what reachable means.
+/// Talks to Cloudflare through Direct API or the cloud-dictation Worker.
+/// Shared by the transcription engine and Test Connection.
 struct CloudflareClient {
     enum ConnectionMode: String {
         case worker
@@ -606,9 +606,9 @@ private enum CloudflareAudioCompressor {
     }
 }
 
-/// Transcribes through a Cloudflare Worker backed by Workers AI.
-/// Audio never touches a local model: the recorded WAV is uploaded and the
-/// worker returns the finished text.
+/// Transcribes through the selected cloud provider. The internal engine key
+/// stays "cloudflare" for persisted-setting compatibility; the displayed name
+/// and request client follow CloudProviderSelection.
 class CloudflareEngine: TranscriptionEngine {
     var engineName: String { CloudProviderSelection.current.label }
 

@@ -68,6 +68,10 @@ Two things do not come from the repo:
 
 Builds stamp their own version and provenance into `Info.plist` (`CFBundleShortVersionString`, `CDSourceRef`, `CDUpstreamRef`), so a binary traces back to the commits that produced it rather than reporting upstream's version.
 
+## Local regression tests
+
+`npm test` covers client encoders, stubbed HTTP and offline audio speed without credentials or paid requests. After `python3 scripts/patch_osw.py`, run `scripts/test_shortcuts.sh` to test the actual pinned shortcut dispatch and mouse-event filtering with isolated test dependencies. That command does not create event taps, post global input, record audio, or alter preferences. Installed hotkey permissions and physical recorder behavior still require a GUI check.
+
 ## How the patching works
 
 `scripts/patch_osw.py` clones [OpenSuperWhisper](https://github.com/Starmel/OpenSuperWhisper) at the pinned commit and applies every change as an exact string replacement, verified before writing. Upstream's source is fetched at build time rather than vendored here, so this repository holds only what the fork adds. If upstream moves an anchor the script stops and names the file it could not patch, rather than producing a half-patched tree. Nothing in `repos/OpenSuperWhisper` is edited by hand.
