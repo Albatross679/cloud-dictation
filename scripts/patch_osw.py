@@ -32,6 +32,7 @@ class PatchError(Exception):
 PATCH_SENTINELS = {
     "Settings: view model properties": "    @Published var cloudflareEndpoint: String {",
     "Settings: cloudflare panel": "    private var cloudflareSettings: some View {",
+    "Settings: engine picker": '                    get: { viewModel.recognitionChoice },',
     "AppPreferences: cloudflare keys": '    @UserDefault(key: "cloudflareEndpoint", defaultValue: "")',
 }
 
@@ -490,6 +491,9 @@ def patch_settings() -> None:
                     }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
+                .accessibilityLabel("Engine")
+                .frame(maxWidth: .infinity)
                 .padding(.bottom, 8)
 
                 if viewModel.selectedEngine == "cloudflare" {
@@ -738,6 +742,25 @@ def patch_settings() -> None:
 
 def patch_combined_engine_selection() -> None:
     path = APP / "Settings.swift"
+    patch(
+        path,
+        '''                    ForEach(SpeechRecognitionChoice.allCases, id: \\.rawValue) { choice in
+                        Text(choice.label).tag(choice)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.bottom, 8)''',
+        '''                    ForEach(SpeechRecognitionChoice.allCases, id: \\.rawValue) { choice in
+                        Text(choice.label).tag(choice)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .accessibilityLabel("Engine")
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 8)''',
+        "Settings: label-free full-width engine picker",
+    )
     patch(
         path,
         '    var cloudProviderCase: CloudProvider { CloudProvider.named(cloudProvider) }',
