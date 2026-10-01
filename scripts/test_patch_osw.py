@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory(prefix="osw-patch-tests-") as directory:
         patcher.patch_cloudflare_setup, patcher.patch_menu_bar,
         patcher.patch_onboarding, patcher.patch_language_util,
         patcher.patch_fluidaudio_engine, patcher.patch_transcription_settings,
-        patcher.patch_failure_paths, patcher.patch_content_view,
+        patcher.patch_failure_paths, patcher.patch_content_view, patcher.patch_usage_metrics,
     ]
     def snapshot():
         return {str(p.relative_to(patcher.APP)): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -60,4 +60,19 @@ with tempfile.TemporaryDirectory(prefix="osw-patch-tests-") as directory:
     assert 'isRefreshingCloudCredentials' in settings
     assert 'it stays in this Mac\'s Keychain' not in settings
     assert (patcher.APP / "Utils/LocalCredentialStore.swift").exists()
-    print("PASS fresh full patch and idempotent rerun, one accessible label-hidden full-width engine bar and local credential UI")
+    service = (patcher.APP / "TranscriptionService.swift").read_text()
+    assert service.count('UsageTracking.$context.withValue') == 1
+    assert service.count('let usageEngine = currentEngine') == 1
+    assert 'let seconds = await UsageTracking.audioSeconds(url)' in service
+    assert 'guard let engine = usageEngine else' in service
+    assert 'let store = usageMetricsStore' in service
+    assert 'metricOutcome = "cancelled"' in service
+    for name in ("ContentView.swift", "Indicator/IndicatorWindow.swift"):
+        flow = (patcher.APP / name).read_text()
+        assert 'let recordingId = metricID' in flow
+        assert 'recordingID: metricID' in flow
+    assert 'metricID: recording.id, recordedAt: recording.timestamp' in (patcher.APP / "TranscriptionQueue.swift").read_text()
+    assert 'UsageDashboardButton()' in (patcher.APP / "ContentView.swift").read_text()
+    for name in ('UsageMetrics.swift', 'UsageSelection.swift', 'UsageDashboard.swift'):
+        assert (patcher.APP / 'Engines' / name).read_bytes() == (ROOT / 'src/client' / name).read_bytes()
+    print("PASS fresh full patch and idempotent rerun, accessible engine bar, credentials, original-duration metrics, retry identity and native dashboard")

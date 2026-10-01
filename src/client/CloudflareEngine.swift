@@ -101,20 +101,22 @@ struct CloudflareClient {
     }
 
     private func directRun(model: String, payload: [String: Any]) async throws -> [String: Any] {
-        try await directRun(request: directRequest(model: model, payload: payload))
+        try await directRun(request: directRequest(model: model, payload: payload), model: model, phase: "cleanup")
     }
 
-    private func directRun(plan: CloudflareDirectPlan) async throws -> [String: Any] {
+    private func directRun(plan: CloudflareDirectPlan, seconds: Double?) async throws -> [String: Any] {
         try await directRun(request: directRequest(
             model: plan.modelID,
             percentEncodedQuery: plan.percentEncodedQuery,
             contentType: plan.contentType,
             body: plan.body
-        ))
+        ), model: plan.modelID, phase: "transcription", seconds: seconds)
     }
 
-    private func directRun(request: URLRequest) async throws -> [String: Any] {
-        let (data, response) = try await URLSession.shared.data(for: request)
+    private func directRun(request: URLRequest, model: String, phase: String, seconds: Double? = nil) async throws -> [String: Any] {
+        let (data, response) = try await UsageTracking.send(provider: "cloudflare", model: model, phase: phase, seconds: seconds) {
+            try await URLSession.shared.data(for: request)
+        }
         guard let http = response as? HTTPURLResponse else { throw ClientError.badStatus(0, "") }
         let body = String(data: data, encoding: .utf8) ?? ""
         guard (200...299).contains(http.statusCode) else { throw ClientError.badStatus(http.statusCode, body) }
@@ -222,7 +224,28 @@ struct CloudflareClient {
         req.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = 300
 
-        let (data, response) = try await URLSession.shared.upload(for: req, fromFile: fileURL)
+        let values = CloudHTTP.values(query)
+        let model = CloudflareDirectRequest.models[values["model"] ?? "nova-3"]?.id ?? values["model"] ?? "nova-3"
+        let (data, response) = try await UsageTracking.send(provider: "cloudflare", model: model,
+                                                          phase: values["cleanup"] == "1" ? "workerPipeline" : "transcription",
+                                                          seconds: await UsageTracking.audioSeconds(fileURL)) {
+            try await URLSession.shared.upload(for: req, fromFile: fileURL)
+        }
+        // Older Workers expose cleanup execution but not its usage or charge.
+        // Keep this observed inner call separate and unknown, never as free.
+        if let context = UsageTracking.context,
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           object["cleanup_ms"] != nil || object["cleanup_error"] != nil || object["cleaned"] as? Bool == true
+            || (values["cleanup"] == "1" && object["cleaned"] is Bool
+                && !(object["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+            let cleanupID = UUID()
+            let key = values["cleanup_model"] ?? "llama-8b"
+            let cleanupModel = Self.cleanupModelIDs[key] ?? Self.cleanupModelIDs["llama-8b"]!
+            context.store.beginRequest(UsageRequest(id: cleanupID, dictationID: context.dictationID, runID: context.runID,
+                                                   startedAt: Date(), provider: "cloudflare", model: cleanupModel,
+                                                   phase: "workerCleanup", uploadedSeconds: nil))
+            context.store.finishRequest(cleanupID, outcome: object["cleanup_error"] == nil ? "workerSuccess" : "workerFailure")
+        }
         guard let http = response as? HTTPURLResponse else {
             throw ClientError.badStatus(0, "")
         }
@@ -265,7 +288,7 @@ struct CloudflareClient {
             throw ClientError.badStatus(400, error.localizedDescription)
         }
 
-        let result = try await directRun(plan: plan)
+        let result = try await directRun(plan: plan, seconds: await UsageTracking.audioSeconds(fileURL))
         var text = (model.readText(result) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if values["cleanup"] == "1", !text.isEmpty {
             text = try await directCleanup(text: text, model: values["cleanup_model"] ?? "llama-8b", terms: terms)
@@ -276,13 +299,15 @@ struct CloudflareClient {
         return text
     }
 
+    private static let cleanupModelIDs = [
+        "llama-8b": "@cf/meta/llama-3.1-8b-instruct-fp8",
+        "llama-3b": "@cf/meta/llama-3.2-3b-instruct",
+        "granite-micro": "@cf/ibm-granite/granite-4.0-h-micro",
+        "mistral-24b": "@cf/mistralai/mistral-small-3.1-24b-instruct",
+    ]
+
     private func directCleanup(text: String, model: String, terms: [String]) async throws -> String {
-        let modelIDs = [
-            "llama-8b": "@cf/meta/llama-3.1-8b-instruct-fp8",
-            "llama-3b": "@cf/meta/llama-3.2-3b-instruct",
-            "granite-micro": "@cf/ibm-granite/granite-4.0-h-micro",
-            "mistral-24b": "@cf/mistralai/mistral-small-3.1-24b-instruct",
-        ]
+        let modelIDs = Self.cleanupModelIDs
         let system = Self.cleanupSystem + (terms.isEmpty ? "" : "\n\nThese terms are spelled correctly. Only correct a word to one of them when it is clearly the same word misheard: \(terms.joined(separator: ", ")).")
         let result = try await directRun(model: modelIDs[model] ?? modelIDs["llama-8b"]!, payload: [
             "messages": [
@@ -372,8 +397,8 @@ struct CloudflareClient {
     }
 }
 
-/// `CloudflareClient` already speaks the protocol the engine needs; this only
-/// states it. Nothing above this line changed when the other providers arrived.
+/// `CloudflareClient` speaks the shared engine protocol. Request metrics wrap
+/// its existing network calls without changing their wire encoders.
 extension CloudflareClient: CloudTranscriber {
     static var catalog: [CloudModel] {
         CloudflareDirectRequest.modelKeys.compactMap { key in

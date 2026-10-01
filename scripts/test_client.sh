@@ -13,18 +13,21 @@ swiftc -O -o "$OUT/test_direct_request" \
   "$ROOT/scripts/test_direct_request.swift"
 
 swiftc -O -o "$OUT/test_provider_requests" \
+  "$ROOT/src/client/UsageMetrics.swift" \
   "$ROOT/src/client/CloudProvider.swift" \
   "$ROOT/src/client/HuggingFaceRequest.swift" \
   "$ROOT/src/client/OpenRouterRequest.swift" \
   "$ROOT/scripts/test_provider_requests.swift"
 
 swiftc -O -o "$OUT/test_provider_clients" \
+  "$ROOT/src/client/UsageMetrics.swift" \
   "$ROOT/src/client/CloudProvider.swift" \
   "$ROOT/src/client/HuggingFaceRequest.swift" \
   "$ROOT/src/client/OpenRouterRequest.swift" \
   "$ROOT/scripts/test_provider_clients.swift"
 
 swiftc -O -o "$OUT/test_local_credentials" \
+  "$ROOT/src/client/UsageMetrics.swift" \
   "$ROOT/src/client/CloudProvider.swift" \
   "$ROOT/src/client/LocalCredentialStore.swift" \
   "$ROOT/src/client/AuthTokenStore.swift" \

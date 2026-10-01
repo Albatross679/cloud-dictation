@@ -8,11 +8,11 @@ import Foundation
 /// renders `.failed` with the reason attached, so the attempt is stored there.
 enum DictationFailure {
     @MainActor
-    static func record(audioAt tempURL: URL, error: Error) async {
+    static func record(audioAt tempURL: URL, error: Error, recordingID: UUID = UUID()) async {
         let duration = await AudioUtil.audioDuration(url: tempURL)
         let timestamp = Date()
         let recording = Recording(
-            id: UUID(),
+            id: recordingID,
             timestamp: timestamp,
             fileName: "\(Int(timestamp.timeIntervalSince1970)).wav",
             transcription: message(for: error),
