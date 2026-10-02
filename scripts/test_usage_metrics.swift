@@ -54,18 +54,26 @@ final class UsageHTTPStub: URLProtocol {
         calendar.firstWeekday = 2
         let start = date("2026-03-08T05:00:00Z"), end = date("2026-03-11T04:00:00Z")
         let buckets = UsageAggregation.buckets(restart.archive, start: start, end: end, period: .daily, calendar: calendar)
+        check("one failed local dictation despite retry and cleanup requests", buckets.map(\.dictations) == [1, 0, 0])
+        var duplicates = restart.archive
+        duplicates.dictations.append(original)
+        check("duplicate IDs count once", UsageAggregation.buckets(duplicates, start: start, end: end, period: .daily, calendar: calendar).reduce(0) { $0 + $1.dictations } == 1)
+        check("integer count ticks and labels", UsageCountFormat.ticks(maximum: 0) == [0, 1] && UsageCountFormat.ticks(maximum: 1) == [0, 1] && UsageCountFormat.ticks(maximum: 20) == [0, 5, 10, 15, 20] && UsageCountFormat.label(1) == "1 dictation" && UsageCountFormat.label(0) == "0 dictations")
         check("spring DST uses 23-hour calendar day", buckets.count == 3 && buckets[1].start.timeIntervalSince(buckets[0].start) == 23 * 3600)
         check("original local minutes counted once, including failed run", buckets[0].minutes == 2 && buckets.reduce(0) { $0 + $1.minutes } == 2)
         check("cost uses request date including cleanup-only cost", buckets[1].actualUSD == 0.012 && buckets[1].unknownCosts == 1 && buckets[2].estimatedUSD == 0.0052)
         let filtered = UsageAggregation.buckets(restart.archive, start: start, end: end, period: .daily, provider: "openrouter", calendar: calendar)
         check("cost filter independent of first dictation provider", filtered.reduce(0) { $0 + $1.minutes } == 0 && filtered[1].actualUSD == 0.012 && filtered.reduce(0) { $0 + $1.unknownCosts } == 0)
         let local = UsageAggregation.buckets(restart.archive, start: start, end: end, period: .daily, provider: "whisper", calendar: calendar)
+        check("provider counts follow dictation, not retry provider", local[0].dictations == 1 && filtered.reduce(0) { $0 + $1.dictations } == 0)
         check("local inference minutes with no cloud charge", local[0].minutes == 2 && local.reduce(0) { $0 + $1.requests } == 0)
         for period in [UsagePeriod.weekly, .monthly] {
             let grouped = UsageAggregation.buckets(restart.archive, start: start, end: end, period: period, calendar: calendar)
+            check("\(period) distinct counts", grouped.reduce(0) { $0 + $1.dictations } == 1)
             check("\(period) totals", grouped.reduce(0) { $0 + $1.minutes } == 2 && grouped.reduce(0) { $0 + $1.actualUSD } == 0.012 && grouped.reduce(0) { $0 + $1.unknownCosts } == 1)
         }
         let fall = UsageAggregation.buckets(UsageArchive(), start: date("2026-11-01T04:00:00Z"), end: date("2026-11-03T05:00:00Z"), period: .daily, calendar: calendar)
+        check("empty counts across DST", fall.map(\.dictations) == [0, 0])
         check("fall DST uses 25-hour calendar day", fall.count == 2 && fall[1].start.timeIntervalSince(fall[0].start) == 25 * 3600)
         check("empty and reversed ranges", UsageAggregation.buckets(UsageArchive(), start: end, end: start, period: .daily).isEmpty)
         check("unverified tiny-en rate remains unknown", UsageCost.audioEstimate(provider: "cloudflare", model: "@cf/openai/whisper-tiny-en", seconds: 60).kind == .unknown)
@@ -93,6 +101,7 @@ final class UsageHTTPStub: URLProtocol {
             UsageDictation(id: UUID(), recordedAt: date("2027-01-01T00:00:00Z"), originalSeconds: nil, engine: "whisper", provider: "whisper", model: "tiny")]
         var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(secondsFromGMT: 0)!
         let yearBuckets = UsageAggregation.buckets(boundaryArchive, start: date("2026-12-01T00:00:00Z"), end: date("2027-02-01T00:00:00Z"), period: .monthly, calendar: utc)
+        check("month/year counts include unknown duration", yearBuckets.map(\.dictations) == [1, 1])
         check("month/year boundaries and missing duration", yearBuckets.count == 2 && yearBuckets[0].minutes == 1 && yearBuckets[1].unknownDurations == 1)
         let exclusive = UsageAggregation.buckets(boundaryArchive, start: date("2026-12-31T00:00:00Z"), end: date("2027-01-01T00:00:00Z"), period: .daily, calendar: utc)
         check("half-open range includes start and excludes end", exclusive.count == 1 && exclusive[0].dictations == 1)

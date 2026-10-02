@@ -28,7 +28,7 @@ struct UsageDashboardButton: View {
         }
         .buttonStyle(.link)
         .font(.caption)
-        .help("Local recording minutes and request costs for every engine")
+        .help("Dictation counts, local recording minutes and request costs for every engine")
     }
 }
 
@@ -122,6 +122,30 @@ struct UsageDashboard: View {
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
                 }
+                GroupBox("Dictations · count") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Chart(buckets) { bucket in
+                            BarMark(x: .value("Calendar period", bucket.start, unit: period.component, calendar: calendar),
+                                    y: .value("Dictations", bucket.dictations))
+                                .foregroundStyle(Color.accentColor)
+                                .accessibilityLabel(bucket.start.formatted(date: .abbreviated, time: .omitted))
+                                .accessibilityValue(UsageCountFormat.label(bucket.dictations))
+                        }
+                        .chartYScale(domain: 0...max(1, buckets.map(\.dictations).max() ?? 0))
+                        .chartYAxis {
+                            AxisMarks(values: UsageCountFormat.ticks(maximum: buckets.map(\.dictations).max() ?? 0)) { value in
+                                AxisGridLine()
+                                AxisTick()
+                                AxisValueLabel { if let count = value.as(Int.self) { Text(count.formatted(.number.precision(.fractionLength(0)))) } }
+                            }
+                        }
+                        .chartYAxisLabel("Dictations")
+                        .frame(height: 165)
+                        .accessibilityLabel("Dictation count by \(period.rawValue.lowercased()) calendar period")
+                        Text("One count per tracked dictation, including failures and local engines. Cleanup and retries do not add counts.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }.padding(8)
+                }
                 GroupBox("Original recording minutes") {
                     Chart(buckets) { bucket in
                         BarMark(x: .value("Calendar period", bucket.start, unit: period.component, calendar: calendar), y: .value("Minutes", bucket.minutes))
@@ -150,12 +174,12 @@ struct UsageDashboard: View {
                 calendarTotals
                 DisclosureGroup("\(period.rawValue) totals for selected range") {
                     VStack(spacing: 8) {
-                        HStack { Text("Period / minutes"); Spacer(); Text("Reported / estimated / unknown") }.font(.caption).foregroundStyle(.secondary)
+                        HStack { Text("Period / dictations / minutes"); Spacer(); Text("Reported / estimated / unknown") }.font(.caption).foregroundStyle(.secondary)
                         ForEach(buckets) { bucket in
                             HStack {
                                 VStack(alignment: .leading) {
                                     Text(bucket.start, format: .dateTime.year().month().day())
-                                    Text(String(format: "%.1f min", bucket.minutes)).foregroundStyle(.secondary)
+                                    Text(UsageCountFormat.label(bucket.dictations) + " · " + String(format: "%.1f min", bucket.minutes)).foregroundStyle(.secondary)
                                 }
                                 Spacer()
                                 VStack(alignment: .trailing) {
@@ -223,7 +247,9 @@ struct UsageDashboard: View {
                     let value = values.first ?? UsageBucket(start: interval.start)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item == .daily ? "Today" : item == .weekly ? "This week" : "This month").font(.caption.weight(.semibold))
-                        Text(String(format: "%.1f min", value.minutes) + " · " + money(value.actualUSD) + " reported · " + money(value.estimatedUSD) + " estimated · \(value.unknownCosts) unknown")
+                        let countAndMinutes = UsageCountFormat.label(value.dictations) + " · " + String(format: "%.1f min", value.minutes)
+                        let costs = money(value.actualUSD) + " reported · " + money(value.estimatedUSD) + " estimated"
+                        Text("\(countAndMinutes) · \(costs) · \(value.unknownCosts) unknown")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
