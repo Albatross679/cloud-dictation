@@ -248,6 +248,14 @@ struct UsageBucket: Identifiable {
     var requests = 0
 }
 
+enum UsageCountFormat {
+    static func label(_ count: Int) -> String { "\(count) " + (count == 1 ? "dictation" : "dictations") }
+    static func ticks(maximum: Int) -> [Int] {
+        let step = max(1, Int(ceil(Double(maximum) / 4)))
+        return Array(stride(from: 0, through: max(1, maximum), by: step))
+    }
+}
+
 enum UsageAggregation {
     /// Calendar boundaries, not fixed 24-hour/7-day intervals. The caller's
     /// calendar supplies the timezone, DST and locale's first weekday.
@@ -267,9 +275,10 @@ enum UsageAggregation {
             guard date >= start, date < end, let boundary = calendar.dateInterval(of: period.component, for: date)?.start else { return nil }
             return indexes[boundary]
         }
+        var countedIDs = Set<UUID>()
         for dictation in archive.dictations where provider == nil || dictation.provider == provider {
             guard let i = index(dictation.recordedAt) else { continue }
-            result[i].dictations += 1
+            if countedIDs.insert(dictation.id).inserted { result[i].dictations += 1 }
             if let seconds = dictation.originalSeconds, seconds.isFinite, seconds >= 0 { result[i].minutes += seconds / 60 }
             else { result[i].unknownDurations += 1 }
         }
